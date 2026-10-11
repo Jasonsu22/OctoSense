@@ -105,13 +105,10 @@ require the full shell. For example, run Mail's demo service from the OctoSense
 root:
 
 ```sh
-MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --locked --release -p octosense --features dev-mode
+MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --locked --release -p octosense
 ```
 
-The demo account uses password `demo`; sends stay in the demo. Only a
-development build reads `MAKEPAD_APP_CONFIG` (`crates/shell/src/launch_input.rs`:
-on a phone it arrives as an intent extra any app can set), hence
-`--features dev-mode` (**unverified** since that change). Develop new store
+The demo account uses password `demo`; sends stay in the demo. Develop new store
 apps in OctoSense App Flow (formerly Design Flow) and use App Hub's admission/publishing flow.
 The [local-catalog recipe](../README.md#try-your-own-app-before-it-is-published)
 tests installation into the shell before publication.

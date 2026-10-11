@@ -124,7 +124,7 @@ App Hub's modules have no process form and always open in-process.
 | `OCTOSENSE_APP_DATA` | Where App Hub keeps installed apps (default `apps/` in the platform data directory). |
 | `OCTOSENSE_HUB`, `OCTOSENSE_HUB_ANCHOR` | App Hub catalog origin (path or URL) and trust anchor; default is the App Hub repository's `main`. |
 | `OCTOSENSE_SYSTEM_APPS` | The system-app selection file; the root `.cargo/config.toml` sets it to `desktop/system-apps.json`. |
-| `MAKEPAD_APP_CONFIG='{"mail_demo":true}'` | Serve Mail's demo mailbox (see [Demos](#demos)); development builds only (debug, or `--features dev-mode`), like all of `MAKEPAD_APP_CONFIG` ([`launch_input.rs`](../crates/shell/src/launch_input.rs)). |
+| `MAKEPAD_APP_CONFIG='{"mail_demo":true}'` | Serve Mail's demo mailbox (see [Demos](#demos)). |
 | `OCTOSENSE_MAIL_VAULT=file` | Keep Mail passwords in a 0600 file instead of the macOS keychain. |
 | `OCTOSENSE_LLM_VAULT=file` | Keep AI providers' keys in the owner-only octos profile instead of the macOS keychain. |
 | `OCTOS_APP_CORE_BIN`, `OCTOS_APP_CORE_DIR` | The octos kernel binary the shell's kernel service runs, unchecked (unset: the packaged `octos-kernel`, see [Build and run](#build-and-run)) and its core dir (default `~/octos-home/.octos`; the AI providers profile is `<dir>/profiles/_main.json`). |
@@ -363,10 +363,10 @@ A card that names no theme takes the shell’s light or dark palette. Toasts and
 ### Mail without an account
 
 ```sh
-MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense --features dev-mode
+MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense
 ```
 
-Open **Mail**, sign in on the host sheet with any address and password `demo`. The demo serves sample messages from a file vault: no network, no keychain. Only a development build reads `MAKEPAD_APP_CONFIG`, hence `--features dev-mode` (**unverified** since that change; a debug `cargo run` works the same way).
+Open **Mail**, sign in on the host sheet with any address and password `demo`. The demo serves sample messages from a file vault: no network, no keychain.
 
 With a real account on an unsigned development build, macOS asks for keychain access again after every rebuild. For development, keep passwords in a file instead:
 

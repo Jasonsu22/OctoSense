@@ -222,7 +222,7 @@ WebView 页面、图库导出、邮件、新闻、Glance 或单次模型调用�
    path 依赖；photo 引擎的 `octosense-photo-service` 随仅限桌面的 `craft-engines` 引入，
    按引擎权衡见 [ADR 0013](../docs/adr/0013-craft-engines-as-pinned-services.zh-CN.md)），并在启动时注册
    （`crates/shell/src/apps.rs` 的 `register_host_services`）：Mail 服务在真实账户下用
-   `register()`，Shell 的应用配置中 `mail_demo: true` 时（仅限开发版）用 `register_demo()`。
+   `register()`，Shell 的应用配置中 `mail_demo: true` 时（桌面端读取；手机端仅限开发版）用 `register_demo()`。
    Mail、News 以及（带 photo 引擎时）Photos 安装 `on_notify` 回调，调用 Shell 共用通知渲染器；Calendar 安装卡片发布器。
    Shell 为其余系统应用命名空间注册 `NoticeService`；`llm` 服务使用 octos 内核的 core 目录以及
    Shell 的二维码扫描器和图片选择器（见 [`llm` 服务](#llm-服务)）。App Hub 只在根目录
@@ -374,12 +374,12 @@ card-host --bundle <OctoSense>/apps/photos/bundle --system --static photos=<原�
 
 ```sh
 # 桌面端，在仓库根目录
-MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense --features dev-mode
+MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense
 # 手机尺寸窗口中的 Home，在 phone/ 中
-MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense-home --features mobile-only,dev-mode
+MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense-home --features mobile-only
 ```
 
-演示邮箱的密码存放在文件中，因此不会弹出钥匙串提示。只有开发版（调试构建或 `--features dev-mode`）读取 `MAKEPAD_APP_CONFIG`；这一改动后两条命令均**未验证**。
+演示邮箱的密码存放在文件中，因此不会弹出钥匙串提示。这些都是桌面构建，会把 `MAKEPAD_APP_CONFIG` 当作本机命令行设置读取；在真实手机上，演示邮箱需要开发版测试构建（`rom/scripts/build-home.py --dev-mode`）。
 
 **Quick Deck 的开发夹具。** `card-host` 没有 `deck` 服务，而随 Shell 发布的
 bundle 中没有任何夹具代码。Quick Deck 的 UI 测试使用 bundle 之外的

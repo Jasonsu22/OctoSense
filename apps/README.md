@@ -285,7 +285,7 @@ standalone launcher and ROM image). Each packaging:
    [`crates/shell`](../crates/shell) (its `app-hub` feature; the photo engine's
    `octosense-photo-service` comes with the desktop-only `craft-engines`, weighed
    per engine in [ADR 0013](../docs/adr/0013-craft-engines-as-pinned-services.md)), and registers them at startup (`crates/shell/src/apps.rs`, `register_host_services`): Mail with `register()` for real accounts, or `register_demo()`
-   when the shell's app config has `mail_demo: true` (a development build only). Mail, News and, with the photo
+   when the shell's app config has `mail_demo: true` (a desktop reads it; a phone only in a development build). Mail, News and, with the photo
    engine, Photos install `on_notify` callbacks to the shell's common notice renderer; Calendar
    installs its card publisher. The shell registers `NoticeService` for
    remaining system-app namespaces; `llm` with the octos
@@ -455,14 +455,15 @@ password `demo`, sample messages, sends that go nowhere):
 
 ```sh
 # the desktop, from the repository root
-MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense --features dev-mode
+MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense
 # Home in a phone-sized window, from phone/
-MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense-home --features mobile-only,dev-mode
+MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense-home --features mobile-only
 ```
 
-The demo keeps its password in a file, so no keychain prompt appears. Only a
-development build (debug, or `--features dev-mode`) reads `MAKEPAD_APP_CONFIG`;
-both commands are **unverified** since that change.
+The demo keeps its password in a file, so no keychain prompt appears. These are
+desktop builds, so they read `MAKEPAD_APP_CONFIG` as a local command-line
+setting; on a real phone the demo needs a development test build
+(`rom/scripts/build-home.py --dev-mode`).
 
 **Quick Deck's dev fixture.** `card-host` has no `deck` service, and the
 shipped bundle has no fixture code. Quick Deck's UI tests use

@@ -1,29 +1,25 @@
-//! Launch input: settings that arrive with a launch, which another app on
-//! the device may have chosen.
+//! Launch input: settings that arrive with a launch.
 //!
-//! **Who can send it.** Home's main activity is exported: it is the app
-//! drawer entry, the Home app, a share target and a deep-link target, so any
-//! installed app can start it, with extras. When the activity is created,
-//! Makepad's Android glue copies the extras `makepad.<NAME>` into the
-//! environment as `MAKEPAD_<NAME>` (`APP_CONFIG`, `PROVISION_CONFIG`,
-//! `OCTOS_PROXY`, the `SEED_*` hooks and others). On OpenHarmony the entry
-//! ability passes the Want's `makepad.*` parameters on in the same way, but
-//! only in a development build (`phone/ohos/EntryAbility.ets`). On a desktop
-//! these variables come from the local user's own environment, as
-//! command-line flags do.
+//! **Where it comes from.** On a desktop these variables are the local
+//! user's own environment, the same trust as a command-line flag. On a
+//! phone they are not: Home's main activity is exported (the app drawer
+//! entry, the Home app, a share target and a deep-link target), so any
+//! installed app can start it with extras, and Makepad's Android glue copies
+//! the extras `makepad.<NAME>` into the environment as `MAKEPAD_<NAME>`
+//! (`APP_CONFIG`, `PROVISION_CONFIG`, `SEED_*` and others). OpenHarmony passes
+//! the Want's `makepad.*` parameters on the same way.
 //!
-//! **The rule.** OctoSense reads launch input only in a development build
-//! (`cfg(dev_mode)`: a debug build, or `--features dev-mode`; never a store
-//! build). That covers the app config below (test actions, Mail's demo
-//! mailbox, module open parameters), the kernel's launch proxy
-//! (`octosense-kernel`) and AppCard's provisioning and seeding hooks
-//! (`octos-app`). A release build ignores them, and says so once in the log
-//! without echoing the value. `--test-action` flags on a desktop command
-//! line are arguments only the local user can pass; they work in every
-//! build (`App::run_test_actions` in `lib.rs`).
+//! **The rule.** On Android and OpenHarmony (`cfg(native_mobile)`) OctoSense
+//! reads the app config only in a development build (`cfg(dev_mode)`: a debug
+//! build, or `--features dev-mode`; never a store build); a release build
+//! there ignores it and says so once in the log, without the value. A desktop
+//! reads it in every build, because its environment is the local user's.
+//! `--test-action` flags on a desktop command line are arguments only the
+//! local user can pass, and work in every build (`App::run_test_actions` in
+//! `lib.rs`).
 //!
-//! Test builds that need these hooks on a phone are development builds
-//! under a separate package name (`rom/scripts/build-home.py --dev-mode`).
+//! A phone build that needs these hooks is a development build under a
+//! separate package name (`rom/scripts/build-home.py --dev-mode`).
 
 use crate::dev_mode::BuildKind;
 use makepad_strict_json::Value;
@@ -33,40 +29,50 @@ use makepad_strict_json::Value;
 /// "module_open": {"<module id>": {…}}, "mail_endpoint": "…"}`.
 pub const APP_CONFIG: &str = "MAKEPAD_APP_CONFIG";
 
-/// Whether a build of this kind reads launch input: a development build
-/// only.
+/// Whether this build reads the app config. A desktop always does; Android
+/// and OpenHarmony, where another app can set it, only in a development
+/// build.
 pub fn honoured(build: BuildKind) -> bool {
-    build == BuildKind::Development
+    honoured_for(cfg!(native_mobile), build)
 }
 
-/// The app config, parsed, when this build reads launch input. A release
-/// build answers `None` whatever the variable holds.
+/// [`honoured`] split out from the target for testing: `native_mobile` is
+/// Android and OpenHarmony (and iOS, which has no such channel but is a
+/// phone all the same).
+fn honoured_for(native_mobile: bool, build: BuildKind) -> bool {
+    !native_mobile || build == BuildKind::Development
+}
+
+/// The app config, parsed, when this build reads launch input. A phone
+/// release build answers `None` whatever the variable holds.
 pub fn app_config() -> Option<Value> {
-    let text = std::env::var(APP_CONFIG).ok()?;
     let build = BuildKind::current();
     if !honoured(build) {
-        note_ignored();
+        if std::env::var_os(APP_CONFIG).is_some() {
+            note_ignored();
+        }
+        return None;
     }
-    parse_app_config(build, &text)
+    std::env::var(APP_CONFIG).ok().and_then(|text| makepad_strict_json::parse(text.as_bytes()).ok())
 }
 
-/// [`app_config`] for a given build and variable text.
-pub fn parse_app_config(build: BuildKind, text: &str) -> Option<Value> {
-    if !honoured(build) {
+/// [`app_config`] for a given target and build, over the given text.
+fn app_config_for(native_mobile: bool, build: BuildKind, text: &str) -> Option<Value> {
+    if !honoured_for(native_mobile, build) {
         return None;
     }
     makepad_strict_json::parse(text.as_bytes()).ok()
 }
 
-/// The app config's `test_actions`, in order, as `--test-action` names;
-/// none in a release build.
+/// The app config's `test_actions`, in order, as `--test-action` names; none
+/// in a phone release build.
 pub fn test_actions() -> Vec<String> {
     app_config().map(|config| test_actions_in(&config)).unwrap_or_default()
 }
 
-/// [`test_actions`] for a given build and variable text.
-pub fn test_actions_for(build: BuildKind, text: &str) -> Vec<String> {
-    parse_app_config(build, text).map(|config| test_actions_in(&config)).unwrap_or_default()
+/// [`test_actions`] for a given target and build, over the given text.
+fn test_actions_for(native_mobile: bool, build: BuildKind, text: &str) -> Vec<String> {
+    app_config_for(native_mobile, build, text).map(|config| test_actions_in(&config)).unwrap_or_default()
 }
 
 fn test_actions_in(config: &Value) -> Vec<String> {
@@ -87,7 +93,7 @@ fn note_ignored() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         makepad_widgets::log!(
-            "launch input: {APP_CONFIG} ignored; a release build takes no test actions or demo settings from a launch"
+            "launch input: {APP_CONFIG} ignored; a release build on a phone takes no test actions or demo settings from a launch"
         )
     });
 }
@@ -97,34 +103,40 @@ mod tests {
     use super::*;
 
     const CONFIG: &str = r#"{"test_actions":["capture:/sdcard/Download/frame.png","launch-mail","system-chat-send:hello"],"mail_demo":true}"#;
+    const ACTIONS: [&str; 3] = ["capture:/sdcard/Download/frame.png", "launch-mail", "system-chat-send:hello"];
 
     #[test]
-    fn a_release_build_ignores_test_actions_from_the_launch() {
+    fn a_phone_release_build_ignores_test_actions_from_the_launch() {
         for build in [BuildKind::Release, BuildKind::Store] {
-            assert!(!honoured(build), "{build:?}");
-            assert!(test_actions_for(build, CONFIG).is_empty(), "{build:?}");
-            assert!(parse_app_config(build, CONFIG).is_none(), "{build:?}");
+            assert!(!honoured_for(true, build), "phone {build:?}");
+            assert!(test_actions_for(true, build, CONFIG).is_empty(), "phone {build:?}");
+            assert!(app_config_for(true, build, CONFIG).is_none(), "phone {build:?}");
         }
     }
 
     #[test]
-    fn a_development_build_keeps_them_in_order() {
-        assert!(honoured(BuildKind::Development));
-        assert_eq!(
-            test_actions_for(BuildKind::Development, CONFIG),
-            ["capture:/sdcard/Download/frame.png", "launch-mail", "system-chat-send:hello"]
-        );
-        let config = parse_app_config(BuildKind::Development, CONFIG).expect("parsed");
+    fn a_desktop_build_reads_them_in_every_build() {
+        for build in [BuildKind::Release, BuildKind::Store, BuildKind::Development] {
+            assert!(honoured_for(false, build), "desktop {build:?}");
+            assert_eq!(test_actions_for(false, build, CONFIG), ACTIONS, "desktop {build:?}");
+        }
+    }
+
+    #[test]
+    fn a_development_build_keeps_them_on_a_phone_too() {
+        assert!(honoured_for(true, BuildKind::Development));
+        assert_eq!(test_actions_for(true, BuildKind::Development, CONFIG), ACTIONS);
+        let config = app_config_for(true, BuildKind::Development, CONFIG).expect("parsed");
         assert_eq!(config.get("mail_demo").and_then(|v| v.as_bool()), Some(true));
     }
 
     #[test]
     fn malformed_or_missing_actions_give_none() {
         for text in ["", "not json", r#"{"test_actions":"launch-mail"}"#, r#"{"mail_demo":true}"#] {
-            assert!(test_actions_for(BuildKind::Development, text).is_empty(), "{text:?}");
+            assert!(test_actions_for(false, BuildKind::Release, text).is_empty(), "{text:?}");
         }
         // Entries that are not strings are skipped, the rest kept.
-        assert_eq!(test_actions_for(BuildKind::Development, r#"{"test_actions":[1,"launch-news",null]}"#), ["launch-news"]);
+        assert_eq!(test_actions_for(false, BuildKind::Release, r#"{"test_actions":[1,"launch-news",null]}"#), ["launch-news"]);
     }
 
     /// The shell has one reader of the app config: this module. Anything
