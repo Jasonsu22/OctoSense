@@ -434,3 +434,27 @@ changes; where they differ from the sections above, they win.
   whose content types come late (as LibreOffice writes them) opens.
 - **`deck.hit`** treats `selected: []` as no selection.
 - **Pictures** whose size can't be read are `invalid:`.
+
+## Inspector states (#507)
+
+The deck service also reports what the inspector shows, read from the open
+document's model (read-only, no engine command):
+
+- `deck.themes`: `color_schemes` is `[{name, colors}]`, each scheme's twelve
+  `#rrggbb` colours in the engine's order (dk1, lt1, dk2, lt2, accent1 to
+  accent6, hlink, folHlink).
+- `deck.open` and `deck.state`: `color_scheme` and `font_scheme` (the first
+  master's, whose theme `theme` names), and `footer` as
+  `{slide_numbers, footer, footer_text, date, hide_on_title}`, the keys
+  `deck.design {footer}` takes. `deck.state` gives `theme` too, so the
+  inspector follows an undo or a redo without reopening.
+- `deck.format_state`: `anchor` (`top`, `middle` or `bottom`; an imported
+  deck may also say `justified` or `distributed`) and `autofit` (`none`,
+  `shrink` or `resize`), as the box draws them: its own setting, else its
+  layout's and master's, else the engine's default.
+- `deck.slide`: a chart's `legend` (a position code, or `"none"`),
+  `data_labels`, `gridlines` and `palette`; a table's `options`, as
+  `{header_row, total_row, banded_rows, first_column, last_column,
+  banded_columns}`, the keys `deck.table {op: "options"}` takes.
+- An Office document that isn't a presentation (a `.docx` or `.xlsx`) is
+  `unsupported:`.
