@@ -163,3 +163,159 @@ fn the_shipped_manifest_asks_for_the_designs_window_size() {
     assert_eq!(manifest.schema_minor, 1);
     assert_eq!(manifest.window, Some(octosense_app_contract::WindowHint::new(1536, 1024)));
 }
+
+#[test]
+fn the_storage_line_reads_what_files_status_says() {
+    // Design 08's status line, from files.status's used_bytes and quota_bytes.
+    assert_eq!(pdftools_model("used_text(15309209, 67108864).to_json()"), json!("14.6 of 64 MB used"));
+    assert_eq!(pdftools_model("used_text(92160, 67108864).to_json()"), json!("90 KB of 64 MB used"));
+    assert_eq!(pdftools_model("used_text(4002, 8388608).to_json()"), json!("4 KB of 8 MB used"));
+    assert_eq!(
+        pdftools_model("usage_from({used_bytes: 15309209 quota_bytes: 67108864}).to_json()"),
+        json!({"used": 15309209, "quota": 67108864})
+    );
+    // No storage, or a shell from before files.status said: nothing to read.
+    for data in ["{}", "nil", "{used_bytes: 5}", "{used_bytes: 5 quota_bytes: 0}"] {
+        assert_eq!(pdftools_model(&format!("usage_from({data}).to_json()")), json!(null), "{data}");
+    }
+}
+
+#[test]
+fn the_edit_panel_reads_a_paragraphs_alignment_from_its_lines() {
+    let align = |boxes: &str| pdftools_model(&format!("guess_align({boxes}).to_json()"));
+    // Design 08's paragraph: flush left, ragged right.
+    assert_eq!(align("[[56, 100, 300, 14], [56, 116, 280, 14], [56, 132, 120, 14]]"), json!("left"));
+    assert_eq!(align("[[56, 100, 300, 14], [56, 116, 300, 14], [56, 132, 120, 14]]"), json!("justify"));
+    assert_eq!(align("[[56, 100, 300, 14], [56, 116, 300.8, 14]]"), json!("left"), "two lines may just happen to end together");
+    assert_eq!(align("[[106, 100, 200, 14], [126, 116, 160, 14], [156, 132, 100, 14]]"), json!("center"));
+    assert_eq!(align("[[100, 100, 256, 14], [150, 116, 206, 14]]"), json!("right"));
+    assert_eq!(align("[[70, 100, 286, 14], [56, 116, 290, 14], [56, 132, 120, 14]]"), json!("left"), "an indented first line");
+    assert_eq!(align("[[56, 100, 300, 14]]"), json!("left"), "one line shows nothing");
+    assert_eq!(align("[]"), json!("left"));
+}
+
+#[test]
+fn an_edit_sends_its_text_and_alignment_and_a_chosen_colour() {
+    // SERVICE.md "Edit": the engine sets a paragraph flush left unless told,
+    // so the alignment always goes; the colour only once one is chosen.
+    let edit = |draft: &str, align: &str, color: &str| {
+        format!("{{page: 2 n: 3 text: \"Old\" draft: \"{draft}\" align: \"{align}\" align0: \"left\" color: {color}}}")
+    };
+    assert_eq!(
+        pdftools_model(&format!("edit_args(\"d1\", {}).to_json()", edit("New", "center", "nil"))),
+        json!({"doc": "d1", "page": 2, "paragraph": 3, "text": "New", "align": "center"})
+    );
+    assert_eq!(
+        pdftools_model(&format!("edit_args(\"d1\", {}).to_json()", edit("Old", "left", "\"#c01c28\""))),
+        json!({"doc": "d1", "page": 2, "paragraph": 3, "text": "Old", "align": "left", "color": "#c01c28"})
+    );
+    let changes = |e: String| pdftools_model(&format!("edit_changes({e}).to_json()"));
+    assert_eq!(changes(edit("Old", "left", "nil")), json!(false), "nothing to apply");
+    assert_eq!(changes(edit("New", "left", "nil")), json!(true));
+    assert_eq!(changes(edit("Old", "right", "nil")), json!(true), "an alignment alone");
+    assert_eq!(changes(edit("Old", "left", "\"#000000\"")), json!(true), "a colour alone");
+    assert_eq!(pdftools_model("colour_name(nil).to_json()"), json!("Its own colour"));
+    assert_eq!(pdftools_model("colour_name(\"#c01c28\").to_json()"), json!("Red"));
+    // What the panel offers is what pdf.edit_text takes.
+    assert_eq!(pdftools_model("ALIGNS.to_json()"), json!(["left", "center", "right", "justify"]));
+    for c in pdftools_model("TEXT_COLOURS.to_json()").as_array().unwrap() {
+        let hex = c["hex"].as_str().unwrap();
+        assert!(hex.len() == 7 && hex.starts_with('#') && hex[1..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "{c}");
+    }
+}
+
+#[test]
+fn the_combine_card_scrolls_its_list_only_when_the_window_is_too_short() {
+    // Each PDF's row and line (114), Add files (60), the box's border (2);
+    // the list of PDFs to add while it is open (10, and 40 a row).
+    let list = |items: u32, adding: u32| pdftools_model(&format!("combine_list_h({items}, {adding}).to_json()"));
+    assert_eq!(list(2, 0), json!(290));
+    assert_eq!(list(1, 5), json!(386));
+    let fits = |list_h: u32, height: u32, error: bool| pdftools_model(&format!("combine_fits({list_h}, {height}, {error}).to_json()"));
+    // Design 06's size (1536 x 1024): two PDFs and the card's own button fit
+    // as designed.
+    assert_eq!(fits(290, 1024, false), json!(true));
+    // The desktop's window above the dock (1292 x 662) and its default
+    // (990 x 603): the list scrolls inside the card, its footer in view.
+    assert_eq!(fits(290, 662, false), json!(false));
+    assert_eq!(fits(290, 603, false), json!(false));
+    // Where it starts to fit: the bars (151), the card's margins (82) and the
+    // rest of the card (279), and a refusal's line (30) takes room.
+    assert_eq!(fits(290, 802, false), json!(true));
+    assert_eq!(fits(290, 801, false), json!(false));
+    assert_eq!(fits(290, 802, true), json!(false));
+}
+
+#[test]
+fn search_is_the_top_bars_and_the_rail_offers_pages_outline_and_comments() {
+    // The user: "side search and top search are duplicated". Search in
+    // document is the one way to search; the rail has no Search of its own.
+    let rail = pdftools_model("RAIL.to_json()");
+    let ids: Vec<&str> = rail.as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["pages", "outline", "comments"]);
+    let labels: Vec<&str> = rail.as_array().unwrap().iter().map(|r| r["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, ["Pages", "Outline", "Comments"]);
+    // While the left panel shows search results, no rail item is lit.
+    let lit = |id: &str, mode: &str, panel: &str, open: bool| pdftools_model(&format!("rail_lit(\"{id}\", \"{mode}\", \"{panel}\", {open}).to_json()"));
+    for id in ids {
+        assert_eq!(lit(id, "read", "search", true), json!(false), "{id} while results show");
+        assert_eq!(lit(id, "read", id, true), json!(true), "{id} while its own panel shows");
+        assert_eq!(lit(id, "read", id, false), json!(false), "{id} while the left side is folded");
+    }
+    assert_eq!(lit("pages", "pages", "search", false), json!(true), "the Pages mode lights Pages");
+    assert_eq!(lit("comments", "pages", "comments", true), json!(false));
+}
+
+#[test]
+fn a_search_gives_the_left_side_back_when_it_ends() {
+    let back = |from: &str| pdftools_model(&format!("panel_after_find({from}).to_json()"));
+    // What the left side showed before the results took it.
+    assert_eq!(back("\"outline\""), json!("outline"));
+    assert_eq!(back("\"comments\""), json!("comments"));
+    assert_eq!(back("\"pages\""), json!("pages"));
+    assert_eq!(back("\"\""), json!(""), "folded away before, folded away after");
+    // Unknown: Pages.
+    assert_eq!(back("nil"), json!("pages"));
+    assert_eq!(back("\"search\""), json!("pages"));
+}
+
+#[test]
+fn read_mode_shows_the_pages_alone() {
+    // The user: "there is no full screen read mode?". In Read mode only the
+    // pages, the floating bar and the corner control that leaves it show.
+    assert_eq!(
+        pdftools_model("chrome_for(true).to_json()"),
+        json!({"tabs": false, "modebar": false, "rail": false, "panels": false, "right": false, "toolrow": false, "status": false, "exit": true})
+    );
+    assert_eq!(
+        pdftools_model("chrome_for(false).to_json()"),
+        json!({"tabs": true, "modebar": true, "rail": true, "panels": true, "right": true, "toolrow": true, "status": true, "exit": false})
+    );
+    // The canvas: the window less the rail (84 and its line), the panels and
+    // the bars (tab row 53, mode bar 54, status line 44, two lines); in Read
+    // mode, the whole window.
+    let canvas = |w: u32, h: u32, reading: bool, left: u32, right: u32| {
+        pdftools_model(&format!("canvas_size({w}, {h}, {reading}, {left}, {right}).to_json()"))
+    };
+    assert_eq!(canvas(1292, 662, false, 205, 0), json!([1002, 509]), "the window's own size, Pages open");
+    assert_eq!(canvas(1292, 662, true, 205, 425), json!([1292, 662]), "Read mode: the panels' room is the pages'");
+    assert_eq!(canvas(990, 603, false, 205, 321), json!([379, 450]));
+    assert_eq!(canvas(300, 200, false, 205, 321), json!([240, 240]), "never smaller than 240");
+}
+
+#[test]
+fn read_mode_keeps_the_zoom_the_person_chose() {
+    // Entering or leaving Read mode: a chosen zoom stays, a fit fits the new
+    // canvas, the automatic zoom is worked out again. (The script's numbers
+    // are single precision: compared to a ten-thousandth.)
+    let kept = |zoom: f64, auto: bool, fit: &str, fit_w: f64, fit_p: f64, start: f64| {
+        pdftools_model(&format!("kept_zoom({zoom}, {auto}, \"{fit}\", {fit_w}, {fit_p}, {start}).to_json()")).as_f64().unwrap()
+    };
+    let near = |got: f64, want: f64, what: &str| assert!((got - want).abs() < 1e-4, "{what}: {got} for {want}");
+    near(kept(1.25, false, "", 2.0907, 0.6766, 1.0), 1.25, "the zoom the person chose");
+    near(kept(0.8, true, "", 2.0907, 0.6766, 1.0), 1.0, "the automatic zoom, worked out again");
+    near(kept(1.6, false, "width", 2.0907, 0.6766, 1.0), 2.09, "fit width, on the new canvas");
+    near(kept(1.6, false, "page", 2.0907, 0.6766, 1.0), 0.67, "fit page, on the new canvas");
+    near(kept(1.0, false, "width", 5.5, 0.1, 1.0), 4.0, "at most 400%");
+    near(kept(1.0, false, "page", 5.5, 0.1, 1.0), 0.25, "at least 25%");
+}

@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-**预发布版下载**：[桌面版 0.1.0-rc.4](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.4) 包含应用契约 1.11.0、共享 Wasm 组件及“能力仅用于声明”的公开 API 策略。请选择与操作系统和架构对应的文件，并核对发行说明及校验和。平台限制见[宿主 OS API 状态](../docs/host-os-api-status.zh-CN.md)；内嵌网页需要满足[各平台浏览器前置条件](../docs/desktop-embedded-browser.zh-CN.md#运行条件)。
+**预发布版下载：** [桌面版 0.1.0-rc.6](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.6) 包含应用契约 1.12.0、WASI TCP/UDP/DNS、共享组件、能力仅用于声明的公开 API 及 OctoSense Updates。请核对带签名的校验和，并查看发行说明中的各平台验收范围。RC5 用户须先手动升级一次。内嵌网页需要满足[各平台浏览器前置条件](../docs/desktop-embedded-browser.zh-CN.md#运行条件)；其他平台限制见[宿主 OS API 状态](../docs/host-os-api-status.zh-CN.md)。
 
 **服务商登录**：GitHub 和 Google 登录仍需[发行方提供注册信息](../crates/oauth-service/README.zh-CN.md#配置发行版本维护者)。发布工作流未配置这些信息；从 App Hub 安装连接账户的应用也不会补上。
 
@@ -190,7 +190,8 @@ python3 tools/release-scan.py target/octosense-package/dist/*   # refuse private
 2. 给提交打标签并推送：`git tag desktop-v0.1.0 <commit> && git push origin desktop-v0.1.0`。版本号取自标签（`desktop-v<major>.<minor>.<patch>[-<pre>]`）。从 `main` 手动运行并设置 `tag`、关闭 `dry_run`，对已有标签效果相同；两种方式都会检出**该标签**而不是分支，并在附加任何文件前核对提交。
 3. `package` 任务（macOS 14 arm64、Windows 2022、Ubuntu 22.04 x86_64，较旧的 glibc 让 `.deb` 和 AppImage 能在旧发行版上使用）运行 `tools/setup.py`、依赖图检查、在中性目录中运行 `package.py` 和扫描，并上传**未签名**的包。这些任务没有任何密钥。
 4. `sign-macos` 和 `sign-windows` 在 `release` 环境中运行，只下载这些包：用 codesign（hardened runtime，`entitlements.plist`）签名内核和应用、把内核收据更新为签名后的字节、重新生成 `.dmg`、notarytool 公证并装订；用 signtool 签名安装包。它们从不检出或构建代码。
-5. `release` 检出标签，核对 HEAD 就是标签的提交，再扫描一次，把所有包、每个平台的收据和 `SHA256SUMS` 附加到该标签的**草稿** release（不标记为 latest，`home-v*` 和 `rom-v*` 也在本仓库）。检查草稿、试用安装包后手动发布。
+5. `release` 检出标签，核对 HEAD 就是标签的提交，再扫描一次，把所有包、每个平台的收据和 `SHA256SUMS` 附加到该标签的**草稿** release（不标记为 latest，`home-v*` 和 `rom-v*` 也在本仓库）。检查草稿并试用安装包。
+6. 为应用内更新器签名：`gh workflow run sign-desktop-release.yml --ref main -f tag=desktop-v0.1.0`。该运行需等 `desktop-release-signing` 环境的审核人批准。它检查 `SHA256SUMS` 是否恰好列出该发布的所有文件及其 GitHub 摘要；随后 GitHub 为 `SHA256SUMS` 签名，运行把签名作为 `SHA256SUMS.sigstore.json` 附到发布中。[OctoSense Updates](../docs/updater.zh-CN.md#校验与隐私) 会拒绝没有此签名的桌面版发布。之后再手动发布草稿。[RC6 签名运行](https://github.com/OctoSense-org/OctoSense/actions/runs/38137543497) 经正常审核人批准后通过。RC6 原版更新器验证了该签名，并拒绝篡改校验和与其他发布标签；[验证范围](../docs/updater.zh-CN.md#验证范围)区分了这些检查与实际安装更新。
 
 修改打包的 pull request 只运行 `package` 任务：没有密钥、不签名、不发布。不构建 x86_64 macOS 版本（macOS 运行器是 arm64）。
 

@@ -58,7 +58,7 @@ pub struct Limits {
     /// How long one call may run.
     pub deadline: Duration,
     /// How long one call may run when it may wait for the network (a
-    /// component that imports `wasi:http`).
+    /// component that imports `wasi:http` or `wasi:sockets`).
     pub network_deadline: Duration,
     /// The most linear memory an instance may have.
     pub memory_bytes: usize,

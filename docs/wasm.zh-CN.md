@@ -59,11 +59,11 @@ Rust crate 构建。服务按文件头区分两者，一个应用包可以同时
   `list<u8>` 返回为 base64，`result<T, E>` 返回为其值，或作为这次请求的错误。
   `wasm.functions` 列出每个导出及其 WIT 签名；接收或返回资源的函数会被列为已跳过，并附原因。
 - **状态。** 每个组件的实例在调用之间留在应用的工作线程里，因此可以保存已解析的文档或缓存。
-  陷阱或超时会使实例作废，下一次调用得到新实例；更新、授权变化、撤回或工作线程退出（一分钟
-  没有调用）都会结束它。
+  陷阱或超时会使实例作废，下一次调用得到新实例；更新、授权变化、撤回、最后一个所属应用隔离实例关闭，
+  或工作线程退出（一分钟没有调用）都会结束它。
 - **能接触什么。** 时钟和随机数。它的 stdout 和 stderr 成为应用的日志行，没有环境变量、
   参数和 stdin。导入 `wasi:cli`、`wasi:clocks`、`wasi:filesystem`、`wasi:http`、`wasi:io`、
-  `wasi:random` 和 `octosense:host` 以外任何东西（例如套接字）的组件在加载时被拒绝。
+  `wasi:random`、`wasi:sockets` 和 `octosense:host` 以外任何东西的组件在加载时被拒绝。
 - **文件。** 应用可用的存储文件夹，即其脚本的 `fs.*` 看到的那个，就是组件的 `/`。
   按账户隔离的应用需要当前已连接账户。设备上的其他路径不可见；存储不可用或所需账户已退出时
   不预打开目录。省略 `storage` 声明不会取消存储。
@@ -71,17 +71,31 @@ Rust crate 构建。服务按文件头区分两者，一个应用包可以同时
   内部失败：`ftruncate` 报告磁盘已满，普通写入报告 I/O 错误，因为 wasi-libc 把任何失败的
   流写入都报告为 I/O 错误。这时请求的错误以 "a write was refused: the storage budget is
   used up" 结尾。改写、截断和删除会归还字节，因此组件可以自己腾出空间。
-- **网络。** 组件的 `wasi:http` 请求可以访问任何主机，与设备本身能访问的范围相同：应用的网络
+- **网络。** 组件的 `wasi:http` 请求以及 `wasi:sockets` TCP、UDP 和 DNS 操作，可以访问设备本身可访问的网络：应用的网络
   声明（`net`、`network.hosts`）在安装时展示，运行时不强制。2026 年 10 月 8 日的裁定取消了按应用
   的运行时闸门，边界是操作系统和宿主的 API 表面。固定版本的 Splash 运行时也不再强制执行
-  清单中的主机列表。导入 `wasi:http` 的组件每次调用有 10 秒，而不是 2 秒；
-  每个请求的连接、首字节和字节间超时都随调用结束。
+  清单中的主机列表。导入 `wasi:http` 或 `wasi:sockets` 的组件每次调用有 10 秒，而不是 2 秒。
+  HTTP 超时以及阻塞的套接字、流和轮询等待都受调用期限约束；在宿主中等待时每隔最多 10 毫秒检查取消。
+  支持 TCP 绑定、监听、接受连接，以及 UDP 绑定、发送和接收，不包含特权原始 IP 套接字（`SOCK_RAW`）。
+  一个应用的所有组件共享 32 个活跃 TCP/UDP 套接字及 DNS 查询流的额度，每个组件的宿主资源表最多
+  512 项（包括流和轮询对象）。关闭句柄归还额度，陷阱或取消立即释放实例资源。DNS 等待可以立即取消，
+  但已经运行的操作系统解析调用会在后台完成前继续占用额度；整个进程最多同时执行八个本地解析任务，没有等待队列。
 - **宿主服务。** 通过 `octosense:host`
   （[`crates/wasm-host/wit/octosense-host.wit`](../crates/wasm-host/wit/octosense-host.wit)），
   组件通过 `request(service, args)` 以已准入应用的身份在 UI 线程上分派调用。
   声明列表不作为执行许可；各服务仍检查账户、同意、审阅和资源边界。组件不能获得面板、权限提示
   或可信用户输入，只能调用允许后台使用的方法。`wasm.*`
   被拒绝，因为应用的工作线程正忙于这次调用；调用的截止时间限制等待时长。
+
+**套接字兼容性：** 桌面 [RC6](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.6)
+在 macOS、Windows 和 Linux 上包含 TCP、UDP 与 DNS 支持。桌面 RC5 会拒绝套接字导入。
+本次桌面发布不更新 Android Home。应用包必须在 `requires` 中保留
+`host-api-v1`、`wasm-components-v1`，并声明 `host_api.required: {"wasm.sockets": 1}`。
+SDK 检测到套接字导入时自动添加声明，App Hub 对内置组件和共享组件都进行验证。
+`wasm.sockets` 是运行时兼容性标记，不是可调用的 JSON 方法或权限。旧宿主仍能读取目录，
+仅把该应用标为不兼容。Rust crate 仍须能为 `wasm32-wasip2` 构建；套接字支持不会让本地 TLS
+后端、进程创建和线程自动变得可移植。Rust WASI 的 UDP `set_read_timeout` 不受支持，
+请使用带截止时间的非阻塞接收，或依靠宿主调用期限。
 
 ADR 0014 记录了开销。在 M 系列 Mac 上，313 KiB 的测试组件约 40 毫秒完成编译，从缓存加载
 约 4 毫秒；它的 Markdown 函数比原生 Rust 慢约 2.6 倍，与同一段代码作为模块时接近。在 Pulley
@@ -150,10 +164,13 @@ ADR 0014 记录了开销。在 M 系列 Mac 上，313 KiB 的测试组件约 40 
 
 | 限制 | 值 |
 | --- | --- |
-| 一次调用（包括启动函数） | 2 秒实际经过时间（每 10 毫秒检查一次） |
+| 一次调用（包括启动函数） | 2 秒；导入 HTTP/套接字时 10 秒（每 10 毫秒检查一次） |
 | 线性内存 | 256 MiB |
 | 表元素 | 16,384 个 |
 | wasm 栈 | 512 KiB |
+| 活跃套接字及 DNS 查询流 | 每个应用 32 个，由其所有组件共享 |
+| 宿主资源表 | 每个组件 512 项 |
+| 本地 DNS 工作 | 每个进程 8 个解析器，直到本地解析完成才归还额度 |
 | 模块 | 8 MiB |
 | 一次调用的输入或输出 | 运行时 16 MiB；服务中序列化后的输入 8 MiB |
 | 日志 | 每次调用 64 行，每行 1 KiB |
@@ -240,8 +257,11 @@ cd phone && cargo test --locked --features mobile-apps -p octosense-shell wasm_s
 - `crates/wasm-host/tests/component.rs` 运行四个由 `crates/wasm-host/tests/component-guest`
   构建的组件：以 JSON 调用未作修改的 crate（pulldown-cmark）、记录与 snake_case 名称、
   同一实例保留状态、时钟、随机数与字节、只能访问授予的文件夹（也包括只读）、存储预算、
-  超时与内存上限；`fetch`，它的 `wasi:http` 只有在主机获准时才能访问本地服务器，向从不应答的
-  服务器发出的请求在截止时间结束；`hostcall`，它通过嵌入方调用宿主服务；以及拒绝导入套接字的组件。
+  超时与内存上限；`fetch`，它的 `wasi:http` 不受清单主机白名单限制，可以访问本地服务器，向从不应答的
+  服务器发出的请求在截止时间结束；`hostcall`，它通过嵌入方调用宿主服务；以及导入普通套接字的组件。
+- `crates/wasm-host/tests/component_sockets.rs` 运行真实 TCP/UDP 回显、本地 DNS、监听及接受连接、
+  共享套接字额度、关闭及归还额度、阻塞读取取消和 UDP 截止时间测试。单元测试另覆盖阻塞的流析构，
+  以及客体放弃之后仍在运行的本地 DNS 任务。
 - 服务测试覆盖工具映射、输入上限、每次调用使用全新实例、更新或授权变化或撤回之后的撤销、
   取消和队列上限，以及应用自己的函数回答它的工具和脚本。对组件，测试覆盖带类型的调用、
   实例的状态、应用的存储文件夹及其配额、没有可用存储目录的应用、作为系统应用经 App Hub 准入发布的
@@ -253,7 +273,7 @@ cd phone && cargo test --locked --features mobile-apps -p octosense-shell wasm_s
 
 测试组件可以逐字节重建：用 rustc 1.97.1，`crates/wasm-host/tests/component-guest/build.sh`
 写出相同的 `notes.component.wasm`（SHA-256 `963c965b…`）、`netprobe.component.wasm`
-（`98b2402a…`）、`fetch.component.wasm`（`6eaf6ac8…`）和 `hostcall.component.wasm`
+（`faf1cb5d…`）、`fetch.component.wasm`（`6eaf6ac8…`）和 `hostcall.component.wasm`
 （`d39f2a8e…`）。只需添加一次目标：`rustup target add wasm32-wasip2`。
 
 `phone.yml` 运行第一条命令，服务的测试则作为 Home 测试的一部分运行（`mobile-apps` 包含

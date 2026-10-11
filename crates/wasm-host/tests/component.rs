@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use octosense_wasm_host::component::{is_component, Grants, HostCalls};
-use octosense_wasm_host::{CallError, Limits, LoadError, Runtime};
+use octosense_wasm_host::{CallError, Limits, Runtime};
 use serde_json::json;
 
 const HOSTCALL: &[u8] = include_bytes!("fixtures/hostcall.component.wasm");
@@ -574,12 +574,8 @@ fn arguments_that_do_not_fit_are_refused_with_the_parameter_name() {
 }
 
 #[test]
-fn a_component_that_imports_sockets_is_refused() {
-    match runtime().load_component(NETPROBE) {
-        Err(LoadError::Import(name)) => assert!(name.starts_with("wasi:sockets/"), "{name}"),
-        Err(other) => panic!("{other:?}"),
-        Ok(_) => panic!("loaded a component that imports sockets"),
-    }
+fn a_component_that_imports_standard_sockets_loads() {
+    assert!(runtime().load_component(NETPROBE).unwrap().uses_network());
 }
 
 #[test]

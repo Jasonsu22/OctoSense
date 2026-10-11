@@ -66,7 +66,9 @@ let INDEX = "accounts/device/library.json"
 let CACHE = ".cache/pages"
 // What an imported PDF is called: the import names its destination first.
 let IMPORT_NAME = "Imported PDF"
-// The app's storage: App Hub's system ceiling (no storage.max_bytes).
+// The app's storage: App Hub's system ceiling (no storage.max_bytes). The
+// status line reads the real numbers from files.status; this is for a host
+// that doesn't say.
 let QUOTA = 67108864
 // What the pdf service allows: 8 open documents, 2 to 16 files per merge,
 // 512 pages named in one call.
@@ -100,6 +102,14 @@ let PAGE_GAP = 13
 // Comment colours: the four dots of the Comment tool row.
 let MARKS = ["yellow", "green", "blue", "pink"]
 let MARK_HEX = {yellow: "#ffd84d" green: "#5cb85c" blue: "#2d7ff9" pink: "#f0609e"}
+// The Edit panel's text colours (design 08), as pdf.edit_text takes them,
+// and its alignments, as it names them (SERVICE.md "Edit").
+let TEXT_COLOURS = [{name: "Black" hex: "#000000"}, {name: "Dark grey" hex: "#4b4f54"}, {name: "Blue" hex: "#1a5fb4"}, {name: "Red" hex: "#c01c28"}, {name: "Green" hex: "#26a269"}, {name: "Orange" hex: "#e66100"}]
+let ALIGNS = ["left", "center", "right", "justify"]
+// The rail (02-reading): Pages, Outline and Comments. Search lives in the top
+// bar alone ("Search in document"): its results take the left panel while a
+// search runs, and give it back when the search ends.
+let RAIL = [{id: "pages" icon: "page" label: "Pages"}, {id: "outline" icon: "outline" label: "Outline"}, {id: "comments" icon: "comment" label: "Comments"}]
 let MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 let MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
@@ -130,12 +140,20 @@ fn size_text(bytes){
     if bytes < 1048576 { return "" + round(bytes / 1024) + " KB" }
     "" + floor(bytes / 104857.6) / 10 + " MB"
 }
-// "14.6 of 64 MB used": the PDFs, against the app's storage.
-// Under 1 MB it counts in kilobytes ("90 KB of 64 MB used").
-fn used_text(bytes){
-    let quota_part = " of " + round(QUOTA / 1048576) + " MB used"
+// "14.6 of 64 MB used": what the app's storage holds, against what it may
+// hold. Under 1 MB it counts in kilobytes ("90 KB of 64 MB used").
+fn used_text(bytes, quota){
+    let quota_part = " of " + round(quota / 1048576) + " MB used"
     if bytes < 1048576 { return size_text(bytes) + quota_part }
     "" + floor(bytes / 104857.6) / 10 + quota_part
+}
+// What files.status says the app's storage holds and may hold, or nil when
+// it doesn't say (no storage, or a shell from before it did).
+fn usage_from(data){
+    let used = optional(data, "used_bytes", nil)
+    let quota = optional(data, "quota_bytes", nil)
+    if used == nil || quota == nil || quota <= 0 { return nil }
+    {used: used quota: quota}
 }
 
 // A library row: the file, and what the index kept about it (`known`, or
@@ -243,8 +261,11 @@ fn day_text(t, now_t){
     "" + a.day + " " + MONTHS[a.month - 1] + " " + a.year
 }
 fn two(n){ pick(n < 10, "0" + n, "" + n) }
-// A comment's date as the engine reports it (a PDF date "D:20261010101200",
-// or ISO "2026-10-10T10:12"), as Unix seconds in local time, or nil.
+// A comment's date as the service reports it, this device's local time
+// ("2026-10-10T10:12"; SERVICE.md "Comments": it reads the date the file
+// writes and converts it from its zone), as its parts, or nil when the file
+// wrote something else (shown as it is). A PDF date the service passed on
+// ("D:20261010101200") reads the same way.
 fn comment_time(date){
     let s = "" + date
     let m = regex("^D?:?([0-9][0-9][0-9][0-9])-?([0-9][0-9])-?([0-9][0-9])[T ]?([0-9][0-9])?:?([0-9][0-9])?").exec(s)
@@ -269,6 +290,116 @@ fn date_text(t){
     "" + a.day + " " + MONTH_NAMES[a.month - 1] + " " + a.year
 }
 
+// How far apart the smallest and largest of `values` are.
+fn spread(values){
+    if values.len() == 0 { return 0 }
+    let lo = values[0]
+    let hi = values[0]
+    for v in values {
+        lo = min(lo, v)
+        hi = max(hi, v)
+    }
+    hi - lo
+}
+// A paragraph's alignment as its lines show it, for the Edit panel's
+// Alignment: `boxes` are its lines' [x, y, w, h] from pdf.lines, top to
+// bottom. Lines that start together are flush left, or justified when every
+// line but the last also ends together (three lines at least: two might
+// just happen to); lines centred on one point are centred, and lines that
+// end together flush right. The engine reports no alignment and sets an
+// edited paragraph flush left unless told otherwise (SERVICE.md "Edit"), so
+// an edit sends what this finds unless the person picks another.
+fn guess_align(boxes){
+    if boxes.len() < 2 { return "left" }
+    let lefts = []
+    let rights = []
+    let centres = []
+    for b in boxes {
+        lefts.push(b[0])
+        rights.push(b[0] + b[2])
+        centres.push(b[0] + b[2] / 2)
+    }
+    if spread(lefts) <= 1.5 {
+        let full = []
+        for i r in rights { if i < rights.len() - 1 { full.push(r) } }
+        if boxes.len() >= 3 && spread(full) <= 1.5 { return "justify" }
+        return "left"
+    }
+    if spread(centres) <= 1.5 { return "center" }
+    if spread(rights) <= 1.5 { return "right" }
+    "left"
+}
+// pdf.edit_text's arguments for the paragraph edit `e`: its text and its
+// alignment always (the engine sets a paragraph flush left when none is
+// named), its colour only when the person chose one.
+fn edit_args(doc, e){
+    let args = {doc: doc page: e.page paragraph: e.n text: e.draft align: e.align}
+    if e.color != nil { args.color = e.color }
+    args
+}
+// The Combine card's list in points (design 06's measures): each PDF's row
+// (113) and its line, the Add files row (60), and, while it is open, the
+// list of PDFs to add (`adding_rows`, each 38 and a gap), in a box with a
+// border.
+fn combine_list_h(items, adding_rows){
+    let h = items * 114 + 60 + 2
+    if adding_rows > 0 { h = h + 10 + adding_rows * 40 }
+    h
+}
+// Whether a Combine card with a list `list_h` tall fits an app `height`
+// tall as designed: below the tab row, the mode bar and above the status
+// line, within the card's margins (42 and 40), beside its own padding,
+// title, the total, Name, a refusal (`error`) and the button (279, and 30).
+// When it does not, the list scrolls inside the card and the rest stays.
+fn combine_fits(list_h, height, error){
+    list_h <= height - TAB_H - MODE_H - STATUS_H - 82 - 279 - pick(error, 30, 0)
+}
+// Whether the edit `e` changes anything: its text, alignment or colour.
+fn edit_changes(e){ e.draft != e.text || e.align != e.align0 || e.color != nil }
+// The left side a search gives back when it ends: what it showed before the
+// results took it (a panel, or "" when it was folded away), else Pages.
+fn panel_after_find(from){
+    if from == "" || from == "pages" || from == "outline" || from == "comments" { return from }
+    "pages"
+}
+// Whether rail item `id` is lit: Pages in the Pages mode; otherwise the open
+// left panel's own item, so none while the panel shows search results.
+fn rail_lit(id, mode, panel, open){
+    if mode == "pages" { return id == "pages" }
+    open && panel == id
+}
+// Read mode (the user: "there is no full screen read mode?"): which of the
+// document's regions show. In Read mode, the pages alone with the floating
+// bar, and the corner control that leaves it; the window stays the window,
+// since no app can make it full screen.
+fn chrome_for(reading){
+    {tabs: !reading modebar: !reading rail: !reading panels: !reading right: !reading toolrow: !reading status: !reading exit: reading}
+}
+// The canvas a document's pages get, in points: the window less the rail,
+// the left panel (`left`, with its line; 0 when folded), the right panel
+// (`right`, likewise), the tab row, the mode bar and the status line; in
+// Read mode, the whole window.
+fn canvas_size(width, height, reading, left, right){
+    if reading { return [max(240, width), max(240, height)] }
+    [max(240, width - RAIL_W - 1 - left - right), max(240, height - TAB_H - MODE_H - STATUS_H - 2)]
+}
+// The zoom a document takes when its canvas changes (entering or leaving
+// Read mode): a fitted zoom fits the new canvas (`fit_w` and `fit_p` are the
+// fits there), the automatic one is worked out again (`start`), and a zoom
+// the person chose stays.
+fn kept_zoom(zoom, zoom_auto, fit, fit_w, fit_p, start){
+    if fit == "width" { return clamp(floor(fit_w * 100) / 100, 0.25, 4.0) }
+    if fit == "page" { return clamp(floor(fit_p * 100) / 100, 0.25, 4.0) }
+    if zoom_auto { return start }
+    zoom
+}
+// A text colour's name in the Edit panel: "Its own colour" until one is chosen.
+fn colour_name(hex){
+    if hex == nil { return "Its own colour" }
+    for c in TEXT_COLOURS { if c.hex == hex { return c.name } }
+    hex
+}
+
 start_timeout(0.05, || boot())
 
 // ---- appearance -----------------------------------------------------------
@@ -290,6 +421,8 @@ let pt_head = if ui_light { #xffffff } else { #x1f262b }
 let pt_desk = if ui_light { #xeceded } else { #x191f24 }
 let pt_status = if ui_light { #xffffff } else { #x1b2226 }
 let pt_pill = if ui_light { #xffffff } else { #x282d32 }
+// Read mode's corner control: the bar's colour, a little see-through.
+let pt_corner = if ui_light { #xffffffd0 } else { #x282d32d0 }
 let pt_card = if ui_light { #xffffff } else { #x232a2e }
 let pt_card_top = if ui_light { #xf7f8f9 } else { #x1e252a }
 let pt_home = if ui_light { #xf7f8f9 } else { #x191f24 }
@@ -378,6 +511,9 @@ if st == nil {
         files_known: false    // files.status answered
         files_ok: false       // this device copies a chosen file in
         max_import: 0
+        used: -1              // what the app's storage holds (files.status); -1 until it says
+        quota: 0              // and what it may hold
+        storage_due: false    // a files.status question is on its way
         importing: false
         alert: nil            // {head detail note}: why something failed, on Home
         space_full: false     // the last write found no room
@@ -496,6 +632,7 @@ fn storage_full(e){
 // Every engine write: a refusal for room shows until a write succeeds or a
 // PDF is removed.
 fn wrote(a){
+    storage_later()
     if a.is_ok { st.space_full = false return }
     if storage_full(a.error) { st.space_full = true }
 }
@@ -624,7 +761,10 @@ fn remove_doc(d){
             render_home()
             return
         }
+        // Its cover, kept in the pdf service's cache folder, goes with it.
+        if d.cover.search(".cache/covers/") == 0 { try { fs.remove(d.cover) } catch {} }
         forget(d.name)
+        storage_later()
         st.space_full = false
         scan_library()
         render_home()
@@ -672,76 +812,107 @@ fn opened_text(d, days){
     "Opened " + a.day + " " + MONTHS[a.month - 1] + " " + a.year
 }
 
-// Each PDF's pages, size and first page, one engine call at a time.
+// Each PDF's cover (its first page) and its pages and size, one engine call
+// at a time. Once a start, Home asks pdf.cover for each of the first
+// SHOWN_COVERS PDFs it shows: the service keeps at most that many covers, and
+// asking for more would evict the ones Home shows first. A kept cover answers
+// from its file alone (a stat and a 24-byte read), and the picture kept in
+// library.json shows meanwhile. A cover at another path is a PDF that
+// changed since (a save, a replacement): its pages and size are read again
+// (pdf.info), as they are for a PDF beyond the first ones that has none.
+let SHOWN_COVERS = 32
 fn cover_next(){
     if st.busy || st.engine == "missing" || st.engine == "old" { return false }
-    for d in st.docs {
-        if optional(st.covers, d.name, nil) == nil && optional(st.cover_tried, d.name, nil) == nil && d.error == "" && !d.locked {
-            read_cover(d)
-            return true
+    for i d in st.docs {
+        if d.error == "" && !d.locked && optional(st.cover_tried, d.name, nil) == nil {
+            if i < SHOWN_COVERS {
+                read_cover(d)
+                return true
+            }
+            if d.pages == nil || d.bytes == nil {
+                st.cover_tried[d.name] = true
+                st.busy = true
+                st.busy_at = time_now()
+                doc_facts(d)
+                return true
+            }
         }
     }
     false
 }
 fn read_cover(d){
     st.cover_tried[d.name] = true
-    if d.cover != "" && d.pages != nil && fs.exists(d.cover) {
+    if optional(st.covers, d.name, nil) == nil && d.cover != "" && fs.exists(d.cover) {
         let src = try { binary_resource(fs.read_bytes(d.cover)) } catch { nil }
         if src != nil {
             st.covers[d.name] = src
             render_home()
-            start_timeout(0.02, || pump())
-            return
         }
-    }
-    let t = tab_named(d.name)
-    if t != nil && t.doc != nil {
-        cover_from(d, t.doc, false)
-        return
     }
     st.busy = true
     st.busy_at = time_now()
-    engine("open", {path: d.path}, fn(a){
-        if engine_gone(a) || outdated_open(a) {
+    engine("cover", {path: d.path dpi: COVER_DPI}, fn(a){
+        if engine_gone(a) {
             st.busy = false
             render_home()
             return
         }
+        wrote(a)
         if !a.is_ok {
-            st.busy = false
-            if err_code(a.error) != "too_many_open" { doc_failed(d, a.error) } else { st.cover_tried[d.name] = nil }
-            render_home()
-            start_timeout(0.02, || pump())
+            // A damaged or locked PDF says so on its card. No room
+            // (storage_full), a first page too large to draw small
+            // (too_large), or a shell without covers leaves the card without
+            // one, and its pages and size still come from the file (pdf.info
+            // writes nothing).
+            let e = a.error
+            if !outdated(e) && !storage_full(e) && err_code(e) != "too_large" {
+                doc_failed(d, e)
+                cover_done()
+                return
+            }
+            if d.pages == nil || d.bytes == nil {
+                doc_facts(d)
+                return
+            }
+            cover_done()
             return
         }
-        d.pages = optional(a.data, "pages", d.pages)
-        cover_from(d, a.data.doc, true)
+        let path = optional(a.data, "path", "")
+        let moved = path != d.cover
+        if moved || optional(st.covers, d.name, nil) == nil {
+            let src = try { binary_resource(fs.read_bytes(path)) } catch { nil }
+            if src != nil { st.covers[d.name] = src }
+        }
+        d.cover = path
+        if moved || d.pages == nil || d.bytes == nil {
+            doc_facts(d)
+            return
+        }
+        cover_done()
     })
 }
-fn cover_from(d, doc, close_after){
-    st.busy = true
-    st.busy_at = time_now()
-    engine("info", {doc: doc}, fn(i){
+// A PDF's pages and size, from the file (the library keeps them).
+fn doc_facts(d){
+    engine("info", {path: d.path}, fn(i){
         if i.is_ok {
             d.bytes = optional(i.data, "file_size", d.bytes)
-            if d.pages == nil { d.pages = optional(i.data, "pages", []).len() }
+            d.pages = optional(i.data, "pages", []).len()
+        } else if !outdated(i.error) {
+            doc_failed(d, i.error)
         }
-        engine("page", {doc: doc page: 1 dpi: COVER_DPI}, fn(a){
-            wrote(a)
-            if a.is_ok {
-                let path = optional(a.data, "path", "")
-                let src = try { binary_resource(fs.read_bytes(path)) } catch { nil }
-                if src != nil {
-                    st.covers[d.name] = src
-                    d.cover = path
-                }
-            }
-            remember(d)
-            if close_after {
-                engine("close", {doc: doc discard: true}, fn(c){ cover_done() })
-            } else { cover_done() }
-        })
+        remember(d)
+        cover_done()
     })
+}
+// A saved PDF changed: its kept cover is out of date, so library.json names
+// none, and Home asks pdf.cover for it again, whose new path makes it read
+// the pages and size again too; the old picture shows until the new one comes
+// (the service drops the old file then).
+fn stale_cover(d){
+    d.cover = ""
+    let tried = {}
+    for k v in st.cover_tried { if k != d.name { tried[k] = v } }
+    st.cover_tried = tried
 }
 fn cover_done(){
     st.busy = false
@@ -761,8 +932,33 @@ fn check_files(){
             if answer.is_ok {
                 st.files_ok = optional(answer.data, "import_supported", false) && optional(answer.data, "storage_granted", false)
                 st.max_import = optional(answer.data, "max_import_bytes", 0)
+                took_usage(answer.data)
             }
             render_home()
+        })
+    })
+}
+// The status line's numbers, from files.status: what the app's storage
+// holds, this service's renders and covers included, and what it may hold.
+fn took_usage(data){
+    let u = usage_from(data)
+    if u == nil { return }
+    st.used = u.used
+    st.quota = u.quota
+}
+// Ask files.status again a moment after a write: one question for a burst of
+// writes (a page turn renders several pages).
+fn storage_later(){
+    if st.storage_due { return }
+    st.storage_due = true
+    start_timeout(0.8, || {
+        host.request("files.status", {}, fn(r){
+            let answer = {is_ok: r.is_ok data: r.data}
+            start_timeout(0.01, || {
+                st.storage_due = false
+                if answer.is_ok { took_usage(answer.data) }
+                render_status()
+            })
         })
     })
 }
@@ -806,6 +1002,7 @@ fn imported(name, a){
         return
     }
     if optional(a.data, "cancelled", false) { render_home() return }
+    storage_later()
     forget(name)
     let taken = []
     for d in st.docs { taken.push(d.title) }
@@ -827,7 +1024,7 @@ fn new_tab(d){
         mode: "read" panel: "pages" panel_kept: "pages" zoom: 1.0 fit: "" zoom_auto: true
         anchor: 1 page: 1
         renders: {} failed: {} thumbs: {} thumb_failed: {} grid: {} grid_failed: {} tile: 1.0
-        find: nil finding: false
+        find: nil finding: false find_from: nil reading: false
         comments: nil comments_state: "" thread: nil tool: "highlight" color: "yellow" reply: "" status_menu: false head_menu: false pending: nil
         fields: nil fields_state: "" field: nil field_text: "" field_on: false show_fields: true place: nil place_text: ""
         selected: [] drag: nil inserting: false
@@ -912,6 +1109,7 @@ fn show_tab(i){
 fn go_home(){
     st.screen = "home"
     scan_library()
+    storage_later()
     show()
     pump()
 }
@@ -1026,16 +1224,22 @@ fn panel_w(t){ pick(t.panel == "pages", PANEL_W, LIST_W) }
 fn right_w(t){ pick(narrow(), 320, pick(t.mode == "comment", THREAD_W, RIGHT_W)) }
 // Below this width a right panel takes the left panel's place.
 fn narrow(){ st.width < 1180 }
-fn canvas_w(){
+// A window too short for the Edit panel's measured gaps (the shell's default
+// 603 points): the panel draws them tighter, so Apply stays in view.
+fn short(){ st.height < 760 }
+fn canvas_box(){
     let t = cur_tab()
-    let w = st.width - RAIL_W - 1
-    if t != nil {
-        if left_open(t) { w = w - panel_w(t) - 1 }
-        if right_open(t) { w = w - right_w(t) - 1 }
+    let reading = reading_on(t)
+    let left = 0
+    let right = 0
+    if t != nil && !reading {
+        if left_open(t) { left = panel_w(t) + 1 }
+        if right_open(t) { right = right_w(t) + 1 }
     }
-    max(240, w)
+    canvas_size(st.width, st.height, reading, left, right)
 }
-fn canvas_h(){ max(240, st.height - TAB_H - MODE_H - STATUS_H - 2) }
+fn canvas_w(){ canvas_box()[0] }
+fn canvas_h(){ canvas_box()[1] }
 fn fit_width_zoom(t){
     let s = page_pt(t, t.page)
     (canvas_w() - 48) / s[0]
@@ -1076,6 +1280,32 @@ fn zoom_text(t){ "" + round(pick(t.mode == "pages", t.tile, t.zoom) * 100) + "%"
 fn refit(t){
     if t.fit == "width" { t.zoom = clamp(floor(fit_width_zoom(t) * 100) / 100, 0.25, 4.0) }
     if t.fit == "page" { t.zoom = clamp(floor(fit_page_zoom(t) * 100) / 100, 0.25, 4.0) }
+}
+
+// ---- Read mode ----------------------------------------------------------------
+
+// Whether tab `t` shows its pages alone (its PDF open and ready).
+fn reading_on(t){ t != nil && optional(t, "reading", false) && t.state == "ready" }
+// From the floating bar's full-screen button: the same page, and the zoom
+// the person chose, or the fit, worked out for the whole window (kept_zoom).
+fn enter_reading(t){
+    if t == nil || t.state != "ready" || t.mode == "pages" || t.mode == "combine" { return }
+    t.reading = true
+    reading_zoom(t)
+    show()
+    go_page(t, t.page)
+}
+// From the bar's Exit read mode or the corner control (a script gets no key
+// events, so there is no Esc): the page and zoom it left Read mode with.
+fn leave_reading(t){
+    if t == nil || !optional(t, "reading", false) { return }
+    t.reading = false
+    reading_zoom(t)
+    show()
+    go_page(t, t.page)
+}
+fn reading_zoom(t){
+    t.zoom = kept_zoom(t.zoom, t.zoom_auto, t.fit, fit_width_zoom(t), fit_page_zoom(t), start_zoom(t))
 }
 
 // ---- the render pump: one engine render at a time ---------------------------
@@ -1152,7 +1382,8 @@ fn invalidate(t){
     t.grid = {}
     t.grid_failed = {}
     t.lines = {}
-    t.find = nil
+    // Its matches are stale: the search ends, and the left side goes back.
+    drop_find(t)
     start_timeout(0.05, || pump())
 }
 // Only page `p` changed (a comment, a filled field, an edited paragraph).
@@ -1240,6 +1471,9 @@ fn find_text(text){
     }
     t.finding = true
     t.find = {query: q total: 0 matches: [] cur: 0 error: "" by_page: {} pages: []}
+    // What the left side showed before the results took it: a new query
+    // while they show keeps it.
+    if t.panel != "search" { t.find_from = t.panel }
     t.panel = "search"
     let refit = auto_fit(t)
     show()
@@ -1270,10 +1504,20 @@ fn find_text(text){
         if t.find.matches.len() > 0 { go_match(t, 0) }
     })
 }
-fn end_find(t){
+// The search ends: its highlights go, and the left side shows what it did
+// before (panel_after_find), now or when Comment or Edit gives it back.
+// Draws nothing.
+fn drop_find(t){
     t.find = nil
     t.finding = false
-    if t.panel == "search" { t.panel = "pages" }
+    let back = panel_after_find(optional(t, "find_from", nil))
+    if t.panel == "search" { t.panel = back }
+    if t.panel_kept == "search" { t.panel_kept = back }
+    t.find_from = nil
+}
+// Done, the results' cross, the field's cross or an empty query.
+fn end_find(t){
+    drop_find(t)
     let refit = auto_fit(t)
     show()
     if refit { go_page(t, t.page) }
@@ -1373,6 +1617,10 @@ fn save(t, then){
         let d = doc_named(t.name)
         if d != nil {
             d.bytes = optional(a.data, "bytes", d.bytes)
+            // Its pages as the open document has them (a page deleted and
+            // saved is gone from Home and Combine too).
+            if t.pages > 0 { d.pages = t.pages }
+            stale_cover(d)
             remember(d)
         }
         render_status()
@@ -1389,12 +1637,15 @@ fn save(t, then){
 fn page_tap(t, p, x, y){
     t.page = p
     render_pill()
+    // Read mode reads: a tap marks, fills or edits nothing.
+    if reading_on(t) { return }
     if t.mode == "comment" { comment_tap(t, p, x, y, false) return }
     if t.mode == "fill" { fill_tap(t, p, x, y) return }
     if t.mode == "edit" { edit_tap(t, p, x, y) return }
     render_panel()
 }
 fn page_double_tap(t, p, x, y){
+    if reading_on(t) { return }
     if t.mode == "comment" { comment_tap(t, p, x, y, true) }
 }
 fn inside(r, x, y){ x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3] }
@@ -1944,7 +2195,14 @@ fn edit_tap(t, p, x, y){
             note("Click a paragraph of text to edit it.")
             return
         }
-        t.edit = {page: p n: hit.n box: hit.box text: hit.text draft: hit.text font: optional(hit, "font", "") size: optional(hit, "size", 0)}
+        // Its lines' boxes show how it is aligned (guess_align).
+        let boxes = []
+        for n in optional(hit, "lines", []) {
+            for l in optional(lines, "lines", []) { if l.n == n { boxes.push(l.box) } }
+        }
+        let align = guess_align(boxes)
+        t.edit = {page: p n: hit.n box: hit.box text: hit.text draft: hit.text font: optional(hit, "font", "") size: optional(hit, "size", 0)
+            align: align align0: align color: nil colours: false}
         render_canvas()
         render_right()
     })
@@ -1952,13 +2210,13 @@ fn edit_tap(t, p, x, y){
 fn apply_edit(t){
     let e = t.edit
     if e == nil { return }
-    if e.draft == e.text {
+    if !edit_changes(e) {
         t.edit = nil
         render_canvas()
         render_right()
         return
     }
-    engine("edit_text", {doc: t.doc page: e.page paragraph: e.n text: e.draft}, fn(a){
+    engine("edit_text", edit_args(t.doc, e), fn(a){
         wrote(a)
         if !a.is_ok {
             note(action_failed("change the text", a.error))
@@ -1975,6 +2233,23 @@ fn apply_edit(t){
 fn cancel_edit(t){
     t.edit = nil
     render_canvas()
+    render_right()
+}
+fn set_align(t, a){
+    if t == nil || t.edit == nil { return }
+    t.edit.align = a
+    render_right()
+}
+// `hex` nil: the paragraph keeps its own colour.
+fn set_colour(t, hex){
+    if t == nil || t.edit == nil { return }
+    t.edit.color = hex
+    t.edit.colours = false
+    render_right()
+}
+fn toggle_colours(t){
+    if t == nil || t.edit == nil { return }
+    t.edit.colours = !t.edit.colours
     render_right()
 }
 fn font_text(e){
@@ -2061,7 +2336,18 @@ fn render_canvas(){ ui.canvas.render() }
 fn render_pill(){ ui.pill.render() }
 fn render_toolrow(){ ui.toolrow.render() }
 fn render_grid(){ ui.grid.render() }
-fn render_combine(){ ui.combine.render() }
+fn render_combine(){
+    let tight = combine_tight(cur_tab())
+    ui.combine_fit.set_visible(!tight)
+    ui.combine_tall.set_visible(tight)
+    if tight {
+        ui.combine_tall_head.render()
+        ui.combine_list.render()
+        ui.combine_tall_foot.render()
+    } else {
+        ui.combine.render()
+    }
+}
 fn render_status(){ ui.status.render() }
 fn render_dialog(){
     ui.dialog_box.set_visible(st.confirm != nil)
@@ -2087,20 +2373,27 @@ fn refresh_doc(){
 fn show(){
     let t = cur_tab()
     let doc = t != nil
+    let c = chrome_for(reading_on(t))
     ui.home.set_visible(!doc)
     ui.doc.set_visible(doc)
+    ui.tabs_box.set_visible(c.tabs)
+    ui.status_box.set_visible(c.status)
+    ui.read_exit_box.set_visible(c.exit)
     if doc {
         let ready = t.state == "ready"
-        ui.panel_narrow.set_visible(ready && left_open(t) && t.panel == "pages")
-        ui.panel_wide.set_visible(ready && left_open(t) && t.panel != "pages")
-        ui.line_left.set_visible(ready && left_open(t))
+        ui.modebar_box.set_visible(c.modebar)
+        ui.rail_box.set_visible(c.rail)
+        ui.toolrow_box.set_visible(c.toolrow)
+        ui.panel_narrow.set_visible(ready && c.panels && left_open(t) && t.panel == "pages")
+        ui.panel_wide.set_visible(ready && c.panels && left_open(t) && t.panel != "pages")
+        ui.line_left.set_visible(ready && c.panels && left_open(t))
         ui.thumbs.set_visible(t.panel == "pages")
         ui.outline_box.set_visible(t.panel == "outline")
         ui.notes_box.set_visible(t.panel == "comments")
         ui.results_box.set_visible(t.panel == "search")
-        ui.right_thread_box.set_visible(ready && t.mode == "comment")
-        ui.right_side_box.set_visible(ready && (t.mode == "fill" || t.mode == "edit"))
-        ui.line_right.set_visible(ready && right_open(t))
+        ui.right_thread_box.set_visible(ready && c.right && t.mode == "comment")
+        ui.right_side_box.set_visible(ready && c.right && (t.mode == "fill" || t.mode == "edit"))
+        ui.line_right.set_visible(ready && c.right && right_open(t))
         ui.canvas.set_visible(ready && t.mode != "pages" && t.mode != "combine")
         ui.grid_box.set_visible(ready && t.mode == "pages")
         ui.combine_box.set_visible(ready && t.mode == "combine")
@@ -2116,6 +2409,7 @@ fn show(){
         if ready && t.mode == "combine" { render_combine() }
         if ready && t.mode != "pages" && t.mode != "combine" { render_canvas() }
         render_pill()
+        if c.exit { ui.read_exit.render() }
     } else {
         ui.home_pane.render()
     }
@@ -2263,20 +2557,16 @@ fn search_field(t){
     }
 }
 
-// The rail: Pages, Outline, Comments, Search.
+// The rail: Pages, Outline, Comments (RAIL). Search is the top bar's.
 fn rail_view(){
     let t = cur_tab()
     View{width: Fill height: Fill flow: Down align: Align{x: 0.5} padding: Inset{top: 13} spacing: 8
-        rail_item(t, "pages", "page", "Pages")
-        rail_item(t, "outline", "outline", "Outline")
-        rail_item(t, "comments", "comment", "Comments")
-        rail_item(t, "search", "search", "Search")
+        for r in RAIL { rail_item(t, r.id, r.icon, r.label) }
     }
 }
 fn rail_on(t, id){
     if t == nil { return false }
-    if t.mode == "pages" { return id == "pages" }
-    left_open(t) && t.panel == id
+    rail_lit(id, t.mode, t.panel, left_open(t))
 }
 fn rail_tap(id){
     let t = cur_tab()
@@ -2300,25 +2590,26 @@ fn rail_item(t, id, ic, label){
     }
 }
 
-// The left panel's head: its title and a cross that folds it away.
-fn head_row(title, line){
+// The left panel's head: its title and a cross that folds it away, or, over
+// search results (`ends_find`), ends the search as Done does.
+fn head_row(title, line, ends_find){
     View{width: Fill height: Fit flow: Down
         View{width: Fill height: 46 flow: Right align: Align{y: 0.5} padding: Inset{left: 15 right: 8}
             Label{padding: 0 width: Fill max_lines: 1 text_overflow: TextOverflow.Ellipsis text: title draw_text +: {color: pt_ink text_style: theme.font_bold{font_size: 13}}}
             IconBtn{width: 30 height: 30 icon_walk: Walk{width: 14 height: 14} draw_icon +: {svg: icon("close") color: pt_muted}
-                on_click: || { let t = cur_tab() if t != nil { set_panel(t, t.panel) } }}
+                on_click: || { let t = cur_tab() if t != nil { if ends_find { end_find(t) } else { set_panel(t, t.panel) } } }}
         }
         if line { Line{draw_bg.color: pt_line_soft} }
     }
 }
-fn panel_head_view(){ head_row("Pages", false) }
+fn panel_head_view(){ head_row("Pages", false, false) }
 fn list_head_view(){
     let t = cur_tab()
     if t == nil { return View{width: Fill height: 1} }
-    if t.panel == "outline" { return head_row("Outline", true) }
-    if t.panel == "comments" { return head_row("Comments", true) }
-    if t.find == nil { return head_row("Search", true) }
-    head_row(find_summary(t), true)
+    if t.panel == "outline" { return head_row("Outline", true, false) }
+    if t.panel == "comments" { return head_row("Comments", true, false) }
+    if t.find == nil { return head_row("Search", true, true) }
+    head_row(find_summary(t), true, true)
 }
 
 // Pages panel: thumbnails, filled in one at a time.
@@ -2633,6 +2924,7 @@ fn canvas_view(){
 fn page_view(t, p){
     let box = page_box(t, p)
     let k = t.zoom
+    let rd = reading_on(t)
     let src = page_src(t, p)
     let failed = optional(t.failed, "p" + p, nil) != nil && src == nil
     RectShadowView{width: box[0] height: box[1] flow: Overlay
@@ -2645,12 +2937,13 @@ fn page_view(t, p){
             }
         }
         if t.find != nil { for i in page_matches(t, p) { for r in t.find.matches[i].rects { hit_box(r, k, i == t.find.cur) } } }
-        if t.mode == "comment" { comment_marks(t, p, k) }
-        if t.mode == "fill" && t.show_fields && t.fields != nil { for f in t.fields { if f.page == p { field_box(t, f, k) } } }
-        GestureView{width: Fill height: Fill cursor: pick(t.mode == "read", MouseCursor.Default, MouseCursor.Hand)
+        // Read mode shows the pages alone: no tool's marks over them.
+        if t.mode == "comment" && !rd { comment_marks(t, p, k) }
+        if t.mode == "fill" && !rd && t.show_fields && t.fields != nil { for f in t.fields { if f.page == p { field_box(t, f, k) } } }
+        GestureView{width: Fill height: Fill cursor: pick(t.mode == "read" || rd, MouseCursor.Default, MouseCursor.Hand)
             on_tap: |x, y| page_tap(cur_tab(), p, x / k, y / k)
             on_double_tap: |x, y| page_double_tap(cur_tab(), p, x / k, y / k)}
-        if t.mode == "edit" && t.edit != nil && t.edit.page == p { edit_box(t, k) }
+        if t.mode == "edit" && !rd && t.edit != nil && t.edit.page == p { edit_box(t, k) }
     }
 }
 fn hit_box(r, k, on){
@@ -2735,7 +3028,24 @@ fn pill_view(){
             SolidView{width: 1 height: 28 margin: Inset{left: 12 right: 12} draw_bg.color: pt_line}
             IconBtn{icon_walk: Walk{width: 21 height: 21} draw_icon +: {svg: icon("fit-width") color: pick(t.fit == "width", pt_accent, pt_icon)} on_click: || { let x = cur_tab() set_zoom(x, fit_width_zoom(x), "width") }}
             IconBtn{margin: Inset{left: 6} icon_walk: Walk{width: 21 height: 21} draw_icon +: {svg: icon("fit-page") color: pick(t.fit == "page", pt_accent, pt_icon)} on_click: || { let x = cur_tab() set_zoom(x, fit_page_zoom(x), "page") }}
+            SolidView{width: 1 height: 28 margin: Inset{left: 12 right: 12} draw_bg.color: pt_line}
+            // Design 02's bar ends with full screen: Read mode, the pages
+            // alone; in it, the way back, always on the bar.
+            if !reading_on(t) {
+                IconBtn{icon_walk: Walk{width: 20 height: 20} draw_icon +: {svg: icon("fullscreen") color: pt_icon} on_click: || enter_reading(cur_tab())}
+            }
+            if reading_on(t) {
+                Flat{height: 36 padding: Inset{left: 10 right: 12} spacing: 8 text: "Exit read mode" icon_walk: Walk{width: 18 height: 18} draw_icon +: {svg: icon("fullscreen-exit") color: pt_icon}
+                    draw_text +: {color: pt_ink2 color_hover: pt_ink color_down: pt_ink text_style: theme.font_regular{font_size: 12}}
+                    on_click: || leave_reading(cur_tab())}
+            }
         }
+    }
+}
+// Read mode's corner control, top right: quiet, and always there.
+fn read_exit_view(){
+    RoundedView{width: Fit height: Fit padding: 3 show_bg: true draw_bg +: {color: pt_corner border_size: 1.0 border_color: pt_line border_radius: 18.0}
+        IconBtn{width: 30 height: 30 icon_walk: Walk{width: 15 height: 15} draw_icon +: {svg: icon("fullscreen-exit") color: pt_muted} on_click: || leave_reading(cur_tab())}
     }
 }
 
@@ -2798,35 +3108,76 @@ fn drop_marker(h){
     }
 }
 
-// Combine: PDFs in order, each with its pages, into one new PDF.
+// Combine: PDFs in order, each with its pages, into one new PDF (design
+// 06). When its list fits the window, the card is as tall as it is, in a pane
+// that scrolls; when it does not (a short window, many PDFs), the card fills
+// the pane, its title and footer (the total, Name and the button) stay in
+// view, and the list scrolls inside it, in a scroll view of its own that
+// keeps its place as the list is drawn again (render_combine).
+fn combine_tight(t){
+    if t == nil || t.combine == nil { return false }
+    let c = t.combine
+    let rows = 0
+    if c.adding {
+        rows = 1
+        for d in st.docs { if !combine_has(t, d.name) && d.error == "" && !d.locked { rows = rows + 1 } }
+    }
+    !combine_fits(combine_list_h(c.items.len(), rows), st.height, c.error != "")
+}
 fn combine_view(){
     let t = cur_tab()
     if t == nil || t.combine == nil { return View{width: Fill height: 1} }
-    let c = t.combine
-    let total = combine_total(t)
     RoundedShadowView{width: Fill max_width: 717 height: Fit flow: Down padding: Inset{left: 24 right: 24 top: 34 bottom: 24}
         draw_bg +: {color: pt_card border_size: 1.0 border_color: pt_line border_radius: 7.0 shadow_color: pt_shadow shadow_radius: 8.0 shadow_offset: vec2(0.0, 1.0)}
-        View{width: Fit height: Fit padding: Inset{left: 16 bottom: 22} Label{padding: 0 text: "Combine files" draw_text +: {color: pt_ink text_style: theme.font_bold{font_size: 16}}}}
-        RoundedView{width: Fill height: Fit flow: Down show_bg: true draw_bg +: {color: pt_card border_size: 1.0 border_color: pt_line border_radius: 3.0}
-            for i it in c.items {
-                combine_row(t, i, it)
-                Line{draw_bg.color: pt_line_soft}
-            }
-            GestureView{width: Fill height: 60 padding: Inset{left: 8 right: 8 top: 9 bottom: 9} cursor: MouseCursor.Hand on_tap: |x, y| { let x = cur_tab() x.combine.adding = !x.combine.adding render_combine() }
-                dashed_box()
-            }
-            if c.adding { add_list(t) }
+        combine_head(false)
+        combine_items(t)
+        combine_foot(t, false)
+    }
+}
+// The tall card's parts (the static frame around them is in the layout).
+fn tall_head_view(){ combine_head(true) }
+fn tall_list_view(){
+    let t = cur_tab()
+    if t == nil || t.combine == nil { return View{width: Fill height: 1} }
+    combine_items(t)
+}
+fn tall_foot_view(){
+    let t = cur_tab()
+    if t == nil || t.combine == nil { return View{width: Fill height: 1} }
+    combine_foot(t, true)
+}
+fn combine_head(tight){
+    View{width: Fit height: Fit padding: Inset{left: 16 bottom: pick(tight, 14, 22)} Label{padding: 0 text: "Combine files" draw_text +: {color: pt_ink text_style: theme.font_bold{font_size: 16}}}}
+}
+fn combine_items(t){
+    let c = t.combine
+    RoundedView{width: Fill height: Fit flow: Down show_bg: true draw_bg +: {color: pt_card border_size: 1.0 border_color: pt_line border_radius: 3.0}
+        for i it in c.items {
+            combine_row(t, i, it)
+            Line{draw_bg.color: pt_line_soft}
         }
-        Line{margin: Inset{top: 18 bottom: 20}}
+        GestureView{width: Fill height: 60 padding: Inset{left: 8 right: 8 top: 9 bottom: 9} cursor: MouseCursor.Hand on_tap: |x, y| { let x = cur_tab() x.combine.adding = !x.combine.adding render_combine() }
+            dashed_box()
+        }
+        if c.adding { add_list(t) }
+    }
+}
+// What the card ends with: the total, the new PDF's name, a refusal, Combine.
+// A tall card draws its gaps tighter, to leave the list room.
+fn combine_foot(t, tight){
+    let c = t.combine
+    let total = combine_total(t)
+    View{width: Fill height: Fit flow: Down
+        Line{margin: Inset{top: pick(tight, 12, 18) bottom: pick(tight, 12, 20)}}
         Label{padding: 0 text: pick(total == nil, "Check the pages of each PDF", "One PDF of " + plural(total, "page", "pages")) draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 13}}}
-        View{width: Fill height: Fit flow: Right align: Align{y: 0.5} margin: Inset{top: 22} spacing: 18
+        View{width: Fill height: Fit flow: Right align: Align{y: 0.5} margin: Inset{top: pick(tight, 12, 22)} spacing: 18
             Label{padding: 0 text: "Name" draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}
             Field{width: 310 height: 40 text: c.name empty_text: "Name of the new PDF" on_change: |text| { let x = cur_tab() x.combine.name = text }}
         }
         if c.error != "" {
-            View{width: Fill height: Fit padding: Inset{top: 14} Label{padding: 0 width: Fill flow: Flow.Right{wrap: true} text: c.error draw_text +: {color: pt_red text_style: theme.font_regular{font_size: 12}}}}
+            View{width: Fill height: Fit padding: Inset{top: pick(tight, 10, 14)} Label{padding: 0 width: Fill flow: Flow.Right{wrap: true} text: c.error draw_text +: {color: pt_red text_style: theme.font_regular{font_size: 12}}}}
         }
-        View{width: Fill height: Fit flow: Right margin: Inset{top: 14}
+        View{width: Fill height: Fit flow: Right margin: Inset{top: pick(tight, 10, 14)}
             Gap{}
             Primary{width: 140 height: 46 spacing: 10 text: pick(c.busy, "Combining…", "Combine") icon_walk: Walk{width: 18 height: 18} draw_icon +: {svg: icon("combine")}
                 draw_text +: {text_style: theme.font_regular{font_size: 13}}
@@ -3165,18 +3516,83 @@ fn edit_panel(t){
                     Label{padding: 0 text: "Paragraph " + t.edit.n draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12.5}}}
                 }
                 Line{draw_bg.color: pt_line_soft}
-                View{width: Fill height: Fit flow: Down padding: Inset{left: 16 right: 16 top: 18 bottom: 20} spacing: 10
+                View{width: Fill height: Fit flow: Down padding: Inset{left: 16 right: 16 top: pick(short(), 12, 18) bottom: pick(short(), 12, 20)} spacing: pick(short(), 8, 10)
                     Label{padding: 0 text: "Font" draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}
                     RoundedView{width: Fill height: 40 flow: Right align: Align{y: 0.5} padding: Inset{left: 12 right: 12} show_bg: true draw_bg +: {color: pt_field border_size: 1.0 border_color: pt_field_line border_radius: 4.0}
                         Label{padding: 0 width: Fill max_lines: 1 text_overflow: TextOverflow.Ellipsis text: font_text(t.edit) draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}
                     }
-                    View{width: Fill height: Fit flow: Right margin: Inset{top: 22} spacing: 14
+                    View{width: Fill height: Fit padding: Inset{top: pick(short(), 4, 14)} Label{padding: 0 text: "Alignment" draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}}
+                    align_segments(t.edit)
+                    View{width: Fill height: Fit padding: Inset{top: pick(short(), 4, 14)} Label{padding: 0 text: "Colour" draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}}
+                    colour_box(t.edit)
+                    View{width: Fill height: Fit flow: Right margin: Inset{top: pick(short(), 12, 22)} spacing: 14
                         Primary{width: Fill height: 37 text: "Apply" on_click: || apply_edit(cur_tab())}
                         Outline{width: Fill height: 37 text: "Cancel" on_click: || cancel_edit(cur_tab())}
                     }
                 }
             }
         }
+    }
+}
+
+// Alignment: four segments (left, centre, right, justify), the paragraph's
+// own (guess_align) chosen until another is tapped.
+fn align_segments(e){
+    RoundedView{width: Fill height: 40 flow: Right padding: 2 spacing: 2 show_bg: true draw_bg +: {color: pt_field border_size: 1.0 border_color: pt_field_line border_radius: 4.0}
+        for a in ALIGNS {
+            GestureView{width: Fill height: Fill cursor: MouseCursor.Hand on_tap: |x, y| set_align(cur_tab(), a)
+                RoundedView{width: Fill height: Fill align: Align{x: 0.5 y: 0.5} show_bg: true
+                    draw_bg +: {color: pick(e.align == a, pt_select, pt_field) border_size: 1.0 border_color: pick(e.align == a, pt_accent, pt_field) border_radius: 3.0}
+                    Ico{width: 20 height: 20 draw_svg +: {svg: icon("align-" + a) color: pick(e.align == a, pt_accent, pt_icon)}}
+                }
+            }
+        }
+    }
+}
+// A text colour as the Edit panel shows it (TEXT_COLOURS).
+fn text_swatch(hex){
+    if hex == "#4b4f54" { return #x4b4f54 }
+    if hex == "#1a5fb4" { return #x1a5fb4 }
+    if hex == "#c01c28" { return #xc01c28 }
+    if hex == "#26a269" { return #x26a269 }
+    if hex == "#e66100" { return #xe66100 }
+    #x000000
+}
+// A colour's square; an empty one for the paragraph's own colour, which the
+// engine doesn't report.
+fn swatch(hex){
+    if hex == nil {
+        return RoundedView{width: 22 height: 22 show_bg: true draw_bg +: {color: pt_field border_size: 1.0 border_color: pt_thumb_line border_radius: 4.0}}
+    }
+    RoundedView{width: 22 height: 22 show_bg: true draw_bg +: {color: text_swatch(hex) border_size: 1.0 border_color: pt_thumb_line border_radius: 4.0}}
+}
+// Colour: the chosen colour in a box that opens into the colours, in its own
+// row (the runtime gives a script no pop-up menu, and the panel is short in
+// a small window: Apply stays in view).
+fn colour_box(e){
+    if e.colours { return colour_list(e) }
+    GestureView{width: Fill height: 40 cursor: MouseCursor.Hand on_tap: |x, y| toggle_colours(cur_tab())
+        RoundedView{width: Fill height: Fill flow: Right align: Align{y: 0.5} padding: Inset{left: 9 right: 12} spacing: 12 show_bg: true draw_bg +: {color: pt_field border_size: 1.0 border_color: pick(e.colours, pt_accent, pt_field_line) border_radius: 4.0}
+            swatch(e.color)
+            Label{padding: 0 width: Fill text: colour_name(e.color) draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}
+            Ico{width: 16 height: 16 draw_svg +: {svg: icon(pick(e.colours, "chevron-up", "chevron-down")) color: pt_icon}}
+        }
+    }
+}
+// The colours the box opens into, the paragraph's own first: tap one to
+// choose it and close them.
+fn colour_chip(e, hex){
+    GestureView{width: 30 height: 30 align: Align{x: 0.5 y: 0.5} cursor: MouseCursor.Hand on_tap: |x, y| set_colour(cur_tab(), hex)
+        RoundedView{width: 30 height: 30 align: Align{x: 0.5 y: 0.5} show_bg: true
+            draw_bg +: {color: pick(e.color == hex, pt_select, pt_field) border_size: 1.0 border_color: pick(e.color == hex, pt_accent, pt_field) border_radius: 4.0}
+            swatch(hex)
+        }
+    }
+}
+fn colour_list(e){
+    RoundedView{width: Fill height: 40 flow: Right align: Align{y: 0.5} padding: Inset{left: 4 right: 4} spacing: 4 show_bg: true draw_bg +: {color: pt_field border_size: 1.0 border_color: pt_accent border_radius: 4.0}
+        colour_chip(e, nil)
+        for c in TEXT_COLOURS { colour_chip(e, c.hex) }
     }
 }
 
@@ -3310,15 +3726,26 @@ fn doc_card(d, days){
     }
 }
 
+// What the status line says of the storage: files.status's numbers, or,
+// from a host that doesn't give them, the library's PDFs against the
+// system ceiling; and how much of the bar that fills.
+fn storage_text(){
+    if st.used >= 0 && st.quota > 0 { return used_text(st.used, st.quota) }
+    used_text(library_bytes(), QUOTA)
+}
+fn storage_share(){
+    if st.used >= 0 && st.quota > 0 { return min(1, st.used / st.quota) }
+    min(1, library_bytes() / QUOTA)
+}
 // The status line: whether the open PDF is saved, and the storage used.
 fn status_view(){
     let t = cur_tab()
-    let used = used_text(library_bytes())
+    let used = storage_text()
     if t == nil {
         return View{width: Fill height: Fill flow: Right align: Align{y: 0.5} padding: Inset{left: 20 right: 29} spacing: 20
             Label{padding: 0 text: used draw_text +: {color: pt_muted text_style: theme.font_regular{font_size: 11}}}
             RoundedView{width: Fill max_width: 1110 height: 6 flow: Right show_bg: true draw_bg +: {color: pt_line_soft border_radius: 3.0}
-                RoundedView{width: max(6, floor(min(1, library_bytes() / QUOTA) * min(1110, st.width - 230))) height: Fill show_bg: true draw_bg +: {color: pick(st.space_full, pt_red, pt_accent) border_radius: 3.0}}
+                RoundedView{width: max(6, floor(storage_share() * min(1110, st.width - 230))) height: Fill show_bg: true draw_bg +: {color: pick(st.space_full, pt_red, pt_accent) border_radius: 3.0}}
             }
         }
     }
@@ -3362,16 +3789,24 @@ fn dialog_view(){
 
 SolidView{width: Fill height: Fill flow: Overlay draw_bg.color: pt_desk
     View{width: Fill height: Fill flow: Down
-        tabs := SolidView{width: Fill height: TAB_H draw_bg.color: pt_tabs on_render: || { tabs_view() }}
+        // Read mode hides these regions through plain wrappers (a view
+        // whose on_render starts hidden stays hidden).
+        tabs_box := View{width: Fill height: Fit
+            tabs := SolidView{width: Fill height: TAB_H draw_bg.color: pt_tabs on_render: || { tabs_view() }}
+        }
         home := SolidView{width: Fill height: Fill flow: Down draw_bg.color: pt_home
             home_pane := ScrollYView{width: Fill height: Fill flow: Down on_render: || { home_view() }}
         }
         doc := View{visible: false width: Fill height: Fill flow: Down
-            modebar := SolidView{width: Fill height: MODE_H draw_bg.color: pt_bar on_render: || { modebar_view() }}
-            Line{}
+            modebar_box := View{width: Fill height: Fit flow: Down
+                modebar := SolidView{width: Fill height: MODE_H draw_bg.color: pt_bar on_render: || { modebar_view() }}
+                Line{}
+            }
             View{width: Fill height: Fill flow: Right
-                rail := SolidView{width: RAIL_W height: Fill draw_bg.color: pt_rail on_render: || { rail_view() }}
-                VLine{}
+                rail_box := View{width: Fit height: Fill flow: Right
+                    rail := SolidView{width: RAIL_W height: Fill draw_bg.color: pt_rail on_render: || { rail_view() }}
+                    VLine{}
+                }
                 panel_narrow := SolidView{visible: false width: PANEL_W height: Fill flow: Down draw_bg.color: pt_panel
                     panel_head := View{width: Fill height: Fit on_render: || { panel_head_view() }}
                     thumbs := ScrollYView{width: Fill height: Fill flow: Down on_render: || { thumbs_view() }}
@@ -3392,14 +3827,27 @@ SolidView{width: Fill height: Fill flow: Overlay draw_bg.color: pt_desk
                 }
                 line_left := VLine{visible: false}
                 View{width: Fill height: Fill flow: Down
-                    toolrow := View{width: Fill height: Fit flow: Down on_render: || { toolrow_view() }}
+                    toolrow_box := View{width: Fill height: Fit
+                        toolrow := View{width: Fill height: Fit flow: Down on_render: || { toolrow_view() }}
+                    }
                     View{width: Fill height: Fill flow: Overlay
                         canvas := ScrollXYView{width: Fill height: Fill flow: Down align: Align{x: 0.5} padding: Inset{top: PAGE_TOP bottom: 92 left: 24 right: 24} on_render: || { canvas_view() }}
                         grid_box := View{visible: false width: Fill height: Fill
                             grid := ScrollYView{width: Fill height: Fill flow: Down align: Align{x: 0.5} padding: Inset{left: 20 right: 20 top: 14 bottom: 92} on_render: || { grid_view() }}
                         }
-                        combine_box := View{visible: false width: Fill height: Fill
-                            combine := ScrollYView{width: Fill height: Fill flow: Down align: Align{x: 0.5} padding: Inset{top: 42 bottom: 40 left: 24 right: 24} on_render: || { combine_view() }}
+                        combine_box := View{visible: false width: Fill height: Fill flow: Down
+                            combine_fit := View{width: Fill height: Fill
+                                combine := ScrollYView{width: Fill height: Fill flow: Down align: Align{x: 0.5} padding: Inset{top: 42 bottom: 40 left: 24 right: 24} on_render: || { combine_view() }}
+                            }
+                            // A short window: the card fills the pane and its list scrolls inside it.
+                            combine_tall := View{visible: false width: Fill height: Fill flow: Down align: Align{x: 0.5} padding: Inset{top: 16 bottom: 16 left: 24 right: 24}
+                                RoundedShadowView{width: Fill max_width: 717 height: Fill flow: Down padding: Inset{left: 24 right: 24 top: 20 bottom: 18}
+                                    draw_bg +: {color: pt_card border_size: 1.0 border_color: pt_line border_radius: 7.0 shadow_color: pt_shadow shadow_radius: 8.0 shadow_offset: vec2(0.0, 1.0)}
+                                    combine_tall_head := View{width: Fill height: Fit on_render: || { tall_head_view() }}
+                                    combine_list := ScrollYView{width: Fill height: Fill flow: Down on_render: || { tall_list_view() }}
+                                    combine_tall_foot := View{width: Fill height: Fit flow: Down on_render: || { tall_foot_view() }}
+                                }
+                            }
                         }
                         notice_box := View{visible: false width: Fill height: Fill
                             notice := View{width: Fill height: Fill flow: Down align: Align{x: 0.5 y: 0.4} padding: 24 on_render: || { notice_view() }}
@@ -3417,8 +3865,13 @@ SolidView{width: Fill height: Fill flow: Overlay draw_bg.color: pt_desk
                 }
             }
         }
-        Line{}
-        status := SolidView{width: Fill height: STATUS_H draw_bg.color: pt_status on_render: || { status_view() }}
+        status_box := View{width: Fill height: Fit flow: Down
+            Line{}
+            status := SolidView{width: Fill height: STATUS_H draw_bg.color: pt_status on_render: || { status_view() }}
+        }
+    }
+    read_exit_box := View{visible: false width: Fill height: Fill flow: Down align: Align{x: 1.0 y: 0.0} padding: 12
+        read_exit := View{width: Fit height: Fit on_render: || { read_exit_view() }}
     }
     banner := View{visible: false width: Fill height: Fill flow: Down align: Align{x: 0.5 y: 1.0} padding: Inset{left: 16 right: 16 bottom: 84}
         RoundedView{width: Fill max_width: 560 height: Fit flow: Right align: Align{y: 0.5} padding: Inset{left: 16 right: 6 top: 6 bottom: 6}
