@@ -7,7 +7,7 @@ An installed app and its Glance card use the same chart vocabulary, while
 retaining their own app identity, storage, consent and lifecycle. Charts draw
 with Makepad's native vector renderer; they do not require a browser or JavaScript.
 
-This integration is newer than desktop RC4. RC4 does **not** register `d3`.
+[Desktop RC5](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.5) is the first release that registers `d3`; RC4 does **not**. [Repo Radar](https://github.com/ymote/octosense-repo-radar) draws its pull-request chart with `d3`, from data its own Wasm component fetches, and was installed from the public catalog on RC5.
 Apps that require charts can declare `"host_api":{"required":{"charts.d3":1}}`
 alongside `"requires":["host-api-v1"]`. This is a compatibility check, not a
 permission. `runtime.describe` reports `charts.d3` as a non-callable runtime ABI.
