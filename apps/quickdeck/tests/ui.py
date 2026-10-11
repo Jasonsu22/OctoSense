@@ -10,7 +10,9 @@ card-host runs serve no host services:
            place of engine(), and make_fixture.py's sample decks (the approved
            designs' own sample text): every designed screen at the designs'
            1536 x 1024, light and dark, each grab put beside its design in
-           compare/
+           compare/, then a table's and the footer's controls; the inspector's
+           switches and marks are checked against what the stand-in reports,
+           and a change and its undo against what it reports after them
   states   the same stand-in: a damaged deck, a protected, a held and an
            unsupported presentation, the unsaved-changes bar, the storage-full
            bar, and the empty library of a first run, light and dark
@@ -28,7 +30,10 @@ bridge, saving original /g grabs. Every engine call is real.
            a chart inserted and its data changed, a layout, a theme, the sorter
            (duplicate, hide, a section), notes, undo and redo, save, export
            (.pptx, PDF and pictures), Present and its notes, light, then dark
-           through the shell's own style menu
+           through the shell's own style menu; in the light pass the
+           inspector's states follow real changes and their undo: a box's
+           anchor and autofit, a chart element, a table option, the colour set
+           and the footer
   restart  the same home again: the library, the deck's slides and covers,
            the place it was left at, and its exports
 
@@ -92,6 +97,9 @@ class Driver:
     # runtime's 64 ms: the budget is wall-clock time, so a loaded machine can
     # overrun it in any handler (--budget-ms).
     budget_ms = None
+    # Whether the journeys check the inspector's states (--grabs-only turns it
+    # off, to take another bundle's frames for a before/after comparison).
+    check_states = True
 
     def __init__(self, port):
         self.port = port
@@ -467,8 +475,18 @@ def labels(app, text):
 
 
 def open_card(app, title):
-    """Home: open a deck from its card."""
-    app.tap(title, "Label", below=380)
+    """Home: open a deck from its card. A click the bridge couldn't deliver
+    while the app was busy (drawing covers) is tried again, until the deck's
+    tab shows."""
+    for _ in range(4):
+        app.tap(title, "Label", below=380)
+        try:
+            wait_until(lambda: any(w["ty"] == "Label" and w.get("t") in (title, title + " •") and w["r"][1] < app.area()[1] + 70
+                                   for w in app.widgets()), "no tab", timeout=8)
+            return
+        except AssertionError:
+            pass
+    raise AssertionError(f"{title!r} never opened from its card")
 
 
 def home_tab(app):
@@ -500,6 +518,8 @@ def fixture_journey(app, out, dark):
     app.images(4)
     click_slide(app, 250, 280)  # the bullet box: chosen
     app.find("Applies to", "Label")
+    # As the stand-in reports the box (design 02): its text shrinks to fit, top.
+    expect("the box shrinking its text, top", lambda: switch_on(app, "Shrink text when it overflows") and segment(app, "Vertical alignment") == 0)
     click_slide(app, 250, 280)  # tapped again: its text in place
     wait_until(lambda: any(w["ty"] == "TextInput" and (w.get("t") or "").startswith("Northwest led") for w in app.widgets()), "the box's text field never came")
     field = [w for w in app.widgets() if w["ty"] == "TextInput" and (w.get("t") or "").startswith("Northwest led")][0]["r"]
@@ -515,6 +535,9 @@ def fixture_journey(app, out, dark):
     app.find("Insert chart", "Button")
     click_slide(app, 480, 300)
     app.find("Elements", "Label")
+    # Design 03: title, data labels and gridlines on, no legend, colourful.
+    expect("the chart's elements", lambda: switch_on(app, "Title") and not switch_on(app, "Legend") and switch_on(app, "Data labels")
+           and switch_on(app, "Gridlines") and segment(app, "Colours", 50) == 0)
     app.grab(out, f"{p}03-chart")
     app.tap("Chart", "Label", below=70)  # the strip closes again
     app.gone("Insert chart")
@@ -530,6 +553,9 @@ def fixture_journey(app, out, dark):
     seg(app, "Theme")
     go_to(app, 1)
     app.find("Themes", "Label")
+    # The deck's colour set and font pair (deck.open): Harbor's own, whose
+    # fonts are Classic's.
+    expect("Harbor's colours and Classic's fonts", lambda: {"Harbor", "Classic"} <= selected_texts(app))
     app.grab(out, f"{p}05-theme")
 
     # 06: the sorter, slides 5 and 6 chosen.
@@ -584,6 +610,32 @@ def fixture_journey(app, out, dark):
     app.images(4)
     app.grab(out, f"{p}10-notes")
 
+    # 11: slide 6's table and its options (design 10's table: a header row,
+    # banded rows and a total row).
+    seg(app, "Format")
+    click_slide(app, 496, 284)
+    app.find("Header row", "Label", timeout=30)
+    expect("the table's options", lambda: switch_on(app, "Header row") and switch_on(app, "Total row") and switch_on(app, "Banded rows")
+           and not switch_on(app, "First column") and not switch_on(app, "Last column") and not switch_on(app, "Banded columns"))
+    app.grab(out, f"{p}11-table")
+    # A table option and its undo: the switch follows the table.
+    app.click(*switch_point(app, "First column"))
+    expect("the first column on", lambda: switch_on(app, "First column"))
+    app.tap("Undo", "Label")
+    expect("the first column off again after Undo", lambda: not switch_on(app, "First column"))
+
+    # 12: the footer (design 05: slide numbers on, no date).
+    seg(app, "Theme")
+    x, y, w, h = app.area()
+    seek(app, "Slide numbers", "Label", at=(x + w - 170, y + h / 2))
+    expect("the deck's footer", lambda: switch_on(app, "Slide numbers") and not switch_on(app, "Date")
+           and any(f["ty"] == "TextInput" and f.get("val") == "Northwind Cooperative" for f in app.widgets()))
+    app.grab(out, f"{p}12-footer")
+    app.click(*switch_point(app, "Date"))
+    expect("the date on", lambda: switch_on(app, "Date"))
+    app.tap("Undo", "Label")
+    expect("the date off again after Undo", lambda: not switch_on(app, "Date"))
+
 
 def seek(app, text, kind="Button", exact=True, at=None, timeout=60.0):
     """Scroll the page under `at` (the middle of the window by default) until
@@ -606,6 +658,56 @@ def reach(app, text, kind="Button", at=None):
     """seek(), then tap it."""
     fx, fy, fw, fh = seek(app, text, kind, at=at)
     app.click(fx + fw / 2, fy + fh / 2)
+
+
+def switch_on(app, label):
+    """The switch on `label`'s row (a Toggle reports its state as `c`)."""
+    lx, ly, lw, lh = app.find(label, "Label")["r"]
+    cy = ly + lh / 2
+    found = [w for w in app.widgets() if "c" in w and w["r"][0] > lx and w["r"][1] <= cy <= w["r"][1] + w["r"][3]]
+    assert found, f"no switch beside {label!r}"
+    return found[0]["c"] == 1
+
+
+def switch_point(app, label):
+    """Where to click `label`'s switch."""
+    lx, ly, lw, lh = app.find(label, "Label")["r"]
+    cy = ly + lh / 2
+    found = [w["r"] for w in app.widgets() if "c" in w and w["r"][0] > lx and w["r"][1] <= cy <= w["r"][1] + w["r"][3]]
+    assert found, f"no switch beside {label!r}"
+    x, y, w, h = found[0]
+    return x + w / 2, y + h / 2
+
+
+def selected_texts(app):
+    """The words inside every view that says it is selected (View.selected)."""
+    widgets = app.widgets()
+    views = [w["r"] for w in widgets if w.get("selected") == "true"]
+    out = set()
+    for w in widgets:
+        if w["ty"] != "Label" or not w.get("t"):
+            continue
+        x, y, ww, hh = w["r"]
+        for vx, vy, vw, vh in views:
+            if vx - 1 <= x and x + ww <= vx + vw + 1 and vy - 1 <= y and y + hh <= vy + vh + 1:
+                out.add(w["t"])
+    return out
+
+
+def segment(app, label, below=60):
+    """Which of the segments under `label` is selected (0-based), or -1."""
+    lx, ly, lw, lh = app.find(label, "Label")["r"]
+    row = sorted((w for w in app.widgets() if "selected" in w and ly + lh <= w["r"][1] <= ly + lh + below), key=lambda w: w["r"][0])
+    assert row, f"no segments under {label!r}"
+    on = [i for i, w in enumerate(row) if w["selected"] == "true"]
+    return on[0] if on else -1
+
+
+def expect(what, check, timeout=30.0):
+    """Wait until the inspector shows `what` (skipped with --grabs-only)."""
+    if not Driver.check_states:
+        return
+    wait_until(check, f"the inspector never showed {what}", timeout=timeout)
 
 
 def tile_number(app, n):
@@ -818,6 +920,8 @@ def shell_journey(app, out, dark):
     app.tap("Ember", "Label")
     app.images(2, timeout=120)
     app.grab(out, f"{p}06-theme")
+    if not dark:
+        states_follow(app, out)
     # notes
     seg(app, "Notes")
     note = [w for w in app.widgets() if w["ty"] == "TextInput" and w["r"][0] > app.area()[2] - 360]
@@ -868,6 +972,150 @@ def shell_journey(app, out, dark):
     app.grab(out, f"{p}09-present")
     app.click(app.area()[2] / 2, app.area()[3] / 2)
     app.tap("Exit", "Button")
+
+
+def states_follow(app, out):
+    """The inspector shows what the engine reports, and follows a real change
+    and its undo: a box's anchor and autofit, a chart element, a table option,
+    the colour set and the footer (SERVICE.md "Inspector states (#507)").
+    After each change the shape is chosen again, or the design read again, so
+    the check is of what the engine reports, not of what the app showed at
+    once; after each Undo, the same."""
+    x, y, w, h = app.area()
+    inspector = (x + w - 170, y + h / 2)
+    seen = {}
+
+    def settle():
+        time.sleep(2.5)
+
+    def choose_again(px, py, ready):
+        click_slide(app, 930, 525)  # the slide's empty corner: nothing chosen
+        app.gone(ready, timeout=30)
+        settle()
+        click_slide(app, px, py)
+        app.find(ready, "Label", timeout=30)
+
+    # A box: its vertical alignment and autofit (deck.format_state).
+    seg(app, "Format")
+    go_to(app, 2)
+    click_slide(app, 300, 200)
+    app.find("Applies to", "Label", timeout=30)
+    seek(app, "Vertical alignment", "Label", at=inspector)
+    expect("the box's anchor", lambda: segment(app, "Vertical alignment") >= 0)
+    anchor, shrink = segment(app, "Vertical alignment"), switch_on(app, "Shrink text when it overflows")
+    target = 2 if anchor != 2 else 0
+    seen["box"] = {"anchor": ["top", "middle", "bottom"][anchor], "shrink": shrink, "set_anchor": ["top", "middle", "bottom"][target], "set_shrink": not shrink}
+    lx, ly, lw, lh = app.find("Vertical alignment", "Label")["r"]
+    row = sorted((v for v in app.widgets() if "selected" in v and ly + lh <= v["r"][1] <= ly + lh + 60), key=lambda v: v["r"][0])
+    bx, by, bw, bh = row[target]["r"]
+    app.click(bx + bw / 2, by + bh / 2)
+    expect("the new anchor", lambda: segment(app, "Vertical alignment") == target)
+    app.click(*switch_point(app, "Shrink text when it overflows"))
+    expect("the box's autofit changed", lambda: switch_on(app, "Shrink text when it overflows") != shrink)
+    choose_again(300, 200, "Applies to")
+    seek(app, "Vertical alignment", "Label", at=inspector)
+    expect("the engine's new anchor and autofit", lambda: segment(app, "Vertical alignment") == target
+           and switch_on(app, "Shrink text when it overflows") != shrink)
+    app.grab(out, "10-box")
+    app.tap("Undo", "Label")
+    app.tap("Undo", "Label")
+    settle()
+    seek(app, "Vertical alignment", "Label", at=inspector)
+    expect("the anchor and autofit back after Undo", lambda: segment(app, "Vertical alignment") == anchor
+           and switch_on(app, "Shrink text when it overflows") == shrink)
+    settle()
+    expect("the anchor and autofit still back", lambda: segment(app, "Vertical alignment") == anchor
+           and switch_on(app, "Shrink text when it overflows") == shrink)
+    app.grab(out, "10b-box-undone")
+
+    # A chart element: data labels (deck.slide's chart).
+    go_to(app, 4)
+    app.images(2, timeout=60)
+    click_slide(app, 480, 300)
+    app.find("Elements", "Label", timeout=30)
+    seek(app, "Data labels", "Label", at=inspector)
+    labels = switch_on(app, "Data labels")
+    seen["chart"] = {"title": switch_on(app, "Title"), "legend": switch_on(app, "Legend"), "data_labels": labels, "gridlines": switch_on(app, "Gridlines")}
+    app.click(*switch_point(app, "Data labels"))
+    expect("the data labels changed", lambda: switch_on(app, "Data labels") != labels)
+    choose_again(480, 300, "Elements")
+    seek(app, "Data labels", "Label", at=inspector)
+    expect("the engine's data labels", lambda: switch_on(app, "Data labels") != labels)
+    app.images(2, timeout=60)
+    app.grab(out, "11-chart")
+    app.tap("Undo", "Label")
+    settle()
+    seek(app, "Data labels", "Label", at=inspector)
+    expect("the data labels back after Undo", lambda: switch_on(app, "Data labels") == labels)
+    settle()
+    expect("the data labels still back", lambda: switch_on(app, "Data labels") == labels)
+    app.grab(out, "11b-chart-undone")
+
+    # A table option: the total row (deck.slide's table).
+    go_to(app, 3)
+    app.tap("Table", "Label", below=70)
+    app.tap("Insert table", "Button")
+    app.find("Header row", "Label", timeout=60)
+    seek(app, "Total row", "Label", at=inspector)
+    total = switch_on(app, "Total row")
+    seen["table"] = {"header_row": switch_on(app, "Header row"), "total_row": total, "banded_rows": switch_on(app, "Banded rows"),
+                     "first_column": switch_on(app, "First column")}
+    app.click(*switch_point(app, "Total row"))
+    expect("the total row changed", lambda: switch_on(app, "Total row") != total)
+    # The engine centres a new table on the slide (deckcraft insert.table).
+    choose_again(480, 270, "Header row")
+    seek(app, "Total row", "Label", at=inspector)
+    expect("the engine's total row", lambda: switch_on(app, "Total row") != total)
+    app.images(2, timeout=60)
+    app.grab(out, "12-table")
+    app.tap("Undo", "Label")
+    settle()
+    seek(app, "Total row", "Label", at=inspector)
+    expect("the total row back after Undo", lambda: switch_on(app, "Total row") == total)
+    settle()
+    expect("the total row still back", lambda: switch_on(app, "Total row") == total)
+    app.grab(out, "12b-table-undone")
+    app.tap("Undo", "Label")  # and the table goes
+    app.gone("Header row", timeout=30)
+
+    # The colour set (deck.state): Ocean, then Undo back to the theme's own.
+    seg(app, "Theme")
+    app.find("Colours", "Label", timeout=30)
+    expect("the theme's colour set marked", lambda: "Ember" in selected_texts(app))
+    seen["colours"] = sorted(t for t in selected_texts(app) if t != "Title")
+    ox, oy, ow, oh = seek(app, "Ocean", "Label", at=inspector)
+    app.click(ox + ow / 2, oy - 8)
+    expect("the Ocean colour set marked", lambda: "Ocean" in selected_texts(app), timeout=60)
+    settle()
+    expect("the engine's colour set, Ocean", lambda: "Ocean" in selected_texts(app))
+    app.images(2, timeout=60)
+    app.grab(out, "13-colours")
+    app.tap("Undo", "Label")
+    expect("Ocean unmarked after Undo", lambda: "Ocean" not in selected_texts(app), timeout=60)
+    app.scroll(-3000, at=inspector)
+    expect("the theme's colour set marked again after Undo", lambda: "Ember" in selected_texts(app), timeout=30)
+    app.grab(out, "13b-colours-undone")
+
+    # The footer (deck.state): slide numbers, then Undo.
+    seek(app, "Slide numbers", "Label", at=inspector)
+    numbers = switch_on(app, "Slide numbers")
+    seen["footer"] = {"slide_numbers": numbers, "date": switch_on(app, "Date")}
+    app.click(*switch_point(app, "Slide numbers"))
+    expect("the slide numbers changed", lambda: switch_on(app, "Slide numbers") != numbers, timeout=60)
+    settle()
+    expect("the engine's slide numbers", lambda: switch_on(app, "Slide numbers") != numbers)
+    app.images(2, timeout=60)
+    app.grab(out, "14-footer")
+    app.tap("Undo", "Label")
+    settle()
+    seek(app, "Slide numbers", "Label", at=inspector)
+    expect("the slide numbers back after Undo", lambda: switch_on(app, "Slide numbers") == numbers, timeout=60)
+    settle()
+    expect("the slide numbers still back", lambda: switch_on(app, "Slide numbers") == numbers)
+    app.grab(out, "14b-footer-undone")
+    (out / "states.json").write_text(json.dumps(seen, indent=1))
+    app.scroll(-3000, at=inspector)
+    go_to(app, 4)  # where the journey was: the rest of it starts from slide 4
 
 
 def restart(app, out):
@@ -944,11 +1192,12 @@ class Lock:
         self.path.rmdir()
 
 
-def dev_bundle(out):
-    """A scratch copy of the bundle with the stand-in engine in place of engine()."""
+def dev_bundle(out, source=None):
+    """A scratch copy of the bundle (or `source`) with the stand-in engine in
+    place of engine()."""
     if out.exists():
         shutil.rmtree(out)
-    shutil.copytree(BUNDLE, out)
+    shutil.copytree(source or BUNDLE, out)
     main = out / "main.splash"
     text = main.read_text()
     start = text.index("fn engine(method, args, done){")
@@ -974,7 +1223,7 @@ def card_host_runs(args, runs):
     assert port_free(args.port), f"port {args.port} is taken"
     with tempfile.TemporaryDirectory(prefix="quickdeck-card-host-", dir=args.work) as scratch:
         scratch = Path(scratch)
-        bundle = dev_bundle(scratch / "bundle")
+        bundle = dev_bundle(scratch / "bundle", args.bundle)
 
         def session(name, which, flags, steps, dark):
             data = scratch / f"{name}-{'dark' if dark else 'light'}"
@@ -1056,9 +1305,12 @@ def main():
     parser.add_argument("--only", choices=["shell", "restart", "missing", "fixture", "states"], action="append")
     parser.add_argument("--budget-ms", type=int, help="MAKEPAD_SPLASH_BUDGET_MS for the hosts (default: the runtime's 64 ms); for a loaded machine")
     parser.add_argument("--grab-scale", type=float, default=0.5, help="the grabs' scale (the bridge's /g scale): 0.5 is one pixel per point on a 2x screen")
+    parser.add_argument("--bundle", type=Path, help="another bundle for the card-host runs (default: apps/quickdeck/bundle), for a before/after comparison")
+    parser.add_argument("--grabs-only", action="store_true", help="take the frames without checking the inspector's states (for another bundle)")
     args = parser.parse_args()
     Driver.scale = args.grab_scale
     Driver.budget_ms = args.budget_ms
+    Driver.check_states = not args.grabs_only
     card_host_only = ("missing", "fixture", "states")
     runs = args.only or (["shell", "restart"] if args.shell else []) + (list(card_host_only) if args.card_host else [])
     assert runs, "give --shell, --card-host or both"

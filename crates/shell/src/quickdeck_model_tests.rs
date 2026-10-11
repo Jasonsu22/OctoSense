@@ -398,3 +398,90 @@ fn the_shipped_manifest_asks_for_the_designs_window_size() {
     assert_eq!(manifest.window, Some(octosense_app_contract::WindowHint::new(1536, 1024)));
     assert_eq!(manifest.capabilities, ["storage", "files", "deck", "model"]);
 }
+
+#[test]
+fn a_chart_shows_its_own_elements_and_a_change_on_its_way() {
+    // SERVICE.md "Inspector states (#507)": deck.slide's chart says legend
+    // (a position or "none"), data_labels, gridlines and palette.
+    let state = |chart: &str, pending: &str| quickdeck_model(&format!("chart_state({chart}, {pending}).to_json()"));
+    assert_eq!(
+        state("{title: \"Revenue\" legend: \"none\" data_labels: true gridlines: true palette: \"colorful1\"}", "{}"),
+        json!({"title": true, "legend": false, "data_labels": true, "gridlines": true, "palette": "colorful1", "mono": false}),
+        "design 03's chart"
+    );
+    assert_eq!(state("{title: \"\" legend: \"r\" data_labels: false gridlines: false palette: \"monochrome3\"}", "{}")["legend"], json!(true));
+    assert_eq!(state("{title: \"\" legend: \"r\" palette: \"monochrome3\"}", "{}")["mono"], json!(true));
+    // An older service said none of it: the engine's defaults (a legend
+    // below, gridlines, no data labels, colourful).
+    assert_eq!(
+        state("{title: \"Chart Title\"}", "{}"),
+        json!({"title": true, "legend": true, "data_labels": false, "gridlines": true, "palette": "colorful1", "mono": false})
+    );
+    // A change shows at once, until deck.slide answers.
+    let pending = state("{title: \"\" legend: \"b\" data_labels: false gridlines: true}", "{legend: \"none\" data_labels: true title: true}");
+    assert_eq!(pending["legend"], json!(false));
+    assert_eq!(pending["data_labels"], json!(true));
+    assert_eq!(pending["title"], json!(true));
+    assert_eq!(quickdeck_model("legend_shown(nil).to_json()"), json!(false));
+}
+
+#[test]
+fn a_table_shows_its_own_options() {
+    let options = |table: &str, pending: &str| quickdeck_model(&format!("table_options({table}, {pending}).to_json()"));
+    // Design 10's table: a header row, banded rows, a total row.
+    assert_eq!(
+        options("{options: {header_row: true total_row: true banded_rows: true first_column: false last_column: false banded_columns: false}}", "{}"),
+        json!({"header_row": true, "total_row": true, "banded_rows": true, "first_column": false, "last_column": false, "banded_columns": false})
+    );
+    // Without options (an older service): the engine's defaults.
+    assert_eq!(
+        options("{}", "{}"),
+        json!({"header_row": true, "total_row": false, "banded_rows": true, "first_column": false, "last_column": false, "banded_columns": false})
+    );
+    assert_eq!(options("{options: {first_column: false}}", "{first_column: true}")["first_column"], json!(true), "a change on its way");
+}
+
+#[test]
+fn a_box_shows_its_anchor_and_autofit() {
+    let state = |fmt: &str| quickdeck_model(&format!("box_state({fmt}).to_json()"));
+    assert_eq!(state("{anchor: \"top\" autofit: \"shrink\"}"), json!({"anchor": "top", "autofit": "shrink", "shrink": true}), "design 02's box");
+    assert_eq!(state("{anchor: \"middle\" autofit: \"resize\"}"), json!({"anchor": "middle", "autofit": "resize", "shrink": false}));
+    assert_eq!(state("{anchor: \"distributed\" autofit: \"none\"}")["anchor"], json!("distributed"), "an imported deck's");
+    assert_eq!(state("nil"), json!({"anchor": "", "autofit": "", "shrink": false}), "before format_state answers");
+}
+
+#[test]
+fn the_footer_and_the_marks_follow_the_deck() {
+    let footer = |f: &str, pending: &str| quickdeck_model(&format!("footer_state({f}, {pending}).to_json()"));
+    // Design 05: slide numbers on, no date.
+    assert_eq!(
+        footer("{slide_numbers: true footer: true footer_text: \"Northwind Cooperative\" date: false hide_on_title: false}", "{}"),
+        json!({"slide_numbers": true, "date": false, "footer": true, "footer_text": "Northwind Cooperative"})
+    );
+    assert_eq!(footer("nil", "{}"), json!({"slide_numbers": false, "date": false, "footer": false, "footer_text": ""}));
+    assert_eq!(footer("{date: false}", "{date: true}")["date"], json!(true), "a change on its way");
+    // The colour set: one picked and on its way, else the deck's, else its theme's.
+    let colours = |chosen: &str, scheme: &str| quickdeck_model(&format!("scheme_mark(\"{chosen}\", \"{scheme}\", \"Harbor\").to_json()"));
+    assert_eq!(colours("", "Ocean"), json!("Ocean"));
+    assert_eq!(colours("Berry", "Ocean"), json!("Berry"));
+    assert_eq!(colours("", ""), json!("Harbor"));
+    // The font pair: by name, else by the deck's families (a built-in theme's
+    // own pair is named after the theme; Harbor's fonts are Classic's).
+    let pairs = "[{name: \"Inter\" major: \"Inter\" minor: \"Inter\"}, {name: \"Classic\" major: \"Merriweather\" minor: \"Open Sans\"}, \
+                 {name: \"Humanist\" major: \"Merriweather\" minor: \"Open Sans\"}]";
+    let fonts = |chosen: &str, scheme: &str, major: &str, minor: &str| {
+        quickdeck_model(&format!("font_mark(\"{chosen}\", \"{scheme}\", {pairs}, \"{major}\", \"{minor}\").to_json()"))
+    };
+    assert_eq!(fonts("", "Humanist", "Merriweather", "Open Sans"), json!("Humanist"), "the deck's pair by name");
+    assert_eq!(fonts("", "Harbor", "Merriweather", "Open Sans"), json!("Classic"), "the theme's own pair by its families");
+    assert_eq!(fonts("Inter", "Harbor", "Merriweather", "Open Sans"), json!("Inter"), "a pick on its way");
+    assert_eq!(fonts("", "Office", "Calibri Light", "Calibri"), json!(""), "an imported deck's own fonts");
+}
+
+#[test]
+fn an_office_document_that_isnt_a_presentation_is_explained() {
+    // #507: a .docx or .xlsx answers unsupported:.
+    let detail = quickdeck_model("open_detail(\"unsupported\").to_json()");
+    let text = detail.as_str().unwrap();
+    assert!(text.contains("Word documents") && text.contains("Excel workbooks"), "{text}");
+}
