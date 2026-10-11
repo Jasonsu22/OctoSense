@@ -304,6 +304,18 @@ they leave the step out and say so in `run.json`.
   `--budget-ms 1000`: at 64 ms, under load averages of 54 to 74, the `shell`
   run passed every step but overran the budget after UI-thread stalls in the
   pdf service's file renames.
+- **Verified on 11 Oct 2026 on Linux** (the Linux build host: Ubuntu 26.04,
+  x86_64, software GL under a headless weston, homes on ext4;
+  [tests/evidence/linux-20261011](tests/evidence/linux-20261011/README.md)):
+  - the model tests and the pdf service's tests;
+  - the `shell`, `restart`, `full` and `empty` runs with the real engine at
+    the runtime's 64 ms budget, five times: four in UTC (the last two after
+    rebases onto main with #485, #494 and #487), and once in UTC+14, where
+    comment dates crossed midnight correctly;
+  - PDF Tools opening at 1296 x 698 (an app area of 1292 x 662), as on the
+    Mac;
+  - "Open a PDF from this device" importing a PDF for real through Makepad's
+    Linux dialog path, with a stand-in answering for the dialog helper.
 - **Verified on 11 Oct 2026, Edit on real-world PDFs** (the Linux build host:
   a private headless weston and Makepad's Wayland backend, not macOS, where
   another session was running OctoSense;
@@ -313,11 +325,12 @@ they leave the step out and say so in `run.json`.
   `--edit-sample` page: the five-pieces note, the font and room warnings with
   Apply anyway, the plain refusal of Chinese text, an edit made anyway and
   one made at once. Edit on macOS since this change is **unverified**.
-- **Not verified**: the host's file dialog and a real import (a hidden window
-  cannot open it); with the real engine, form fields, outlines, Redo, the
-  other comment and page operations, password-protected PDFs, the eight-PDF
-  cap and the unsaved-changes question (the dev fixture covers their screens);
-  other screen sizes; Linux, Windows, phones.
+- **Not verified**: the host's own file dialog (a hidden window on the Mac
+  cannot open it; on Linux a stand-in helper answered); with the real engine,
+  form fields, outlines, Redo, the other comment and page operations,
+  password-protected PDFs, the eight-PDF cap and the unsaved-changes question
+  (the dev fixture covers their screens); other screen sizes; on Linux, X11,
+  a GPU and a desktop compositor; Windows; phones.
 - **Known**: Read mode fills the app's window, not the screen: no app can
   make the OctoSense window itself full screen (there is no host API for it),
   so maximize the window for the full effect. On a heavily loaded machine a
