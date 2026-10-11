@@ -585,3 +585,134 @@ fn finished_worker_does_not_wait_indefinitely_for_os_resolver_tasks() {
     worker.join().unwrap();
     assert!(bounded.expect("runtime shutdown must be bounded").is_ok());
 }
+
+/// A page as GitHub sends it: each release with its notes, author and assets
+/// with their uploaders, as large as OctoSense's own (28 KiB each).
+fn realistic_page(count: usize) -> Vec<u8> {
+    let user = serde_json::json!({"login": "github-actions[bot]", "id": 41898282,
+        "node_id": "MDM6Qm90NDE4OTgyODI=", "avatar_url": "https://avatars.githubusercontent.com/in/15368?v=4",
+        "url": "https://api.github.com/users/github-actions%5Bbot%5D", "html_url": "https://github.com/apps/github-actions",
+        "followers_url": "https://api.github.com/users/github-actions%5Bbot%5D/followers",
+        "repos_url": "https://api.github.com/users/github-actions%5Bbot%5D/repos", "type": "Bot", "site_admin": false});
+    let releases: Vec<_> = (0..count)
+        .map(|i| {
+            let tag = format!("desktop-v0.{i}.0");
+            let assets: Vec<_> = (0..9)
+                .map(|n| {
+                    let name = format!("OctoSense_0.{i}.0_asset-{n}.receipt.json");
+                    serde_json::json!({"url": format!("https://api.github.com/repos/OctoSense-org/OctoSense/releases/assets/{n}"),
+                        "id": n, "node_id": "RA_kwDOUJ6Gss4OctoSense", "name": name, "label": "", "uploader": user,
+                        "content_type": "application/json", "state": "uploaded", "size": 1000,
+                        "digest": format!("sha256:{}", "a".repeat(64)), "download_count": 3,
+                        "created_at": "2026-10-10T00:00:00Z", "updated_at": "2026-10-10T00:00:00Z",
+                        "browser_download_url": format!("{RELEASES_WEB}/download/{tag}/{name}")})
+                })
+                .collect();
+            serde_json::json!({"url": "https://api.github.com/repos/OctoSense-org/OctoSense/releases/1",
+                "html_url": format!("{RELEASES_WEB}/tag/{tag}"), "id": i, "author": user, "node_id": "RE_kwDOUJ6Gss4",
+                "tag_name": tag, "target_commitish": "main", "name": format!("OctoSense desktop 0.{i}.0"),
+                "draft": false, "prerelease": false, "created_at": "2026-10-10T00:00:00Z",
+                "published_at": "2026-10-10T00:00:00Z", "assets": assets, "body": "Release notes. ".repeat(1200)})
+        })
+        .collect();
+    serde_json::to_vec(&releases).unwrap()
+}
+#[test]
+fn a_full_page_of_real_sized_releases_fits() {
+    // The first limit, 2 MiB a page, refused a page of 73 such releases.
+    let page = realistic_page(RELEASES_PER_PAGE);
+    assert!(page.len() as u64 > 2 * 1024 * 1024);
+    assert!(page.len() as u64 <= MAX_METADATA, "{} bytes", page.len());
+    let releases = parse_release_page(&page).unwrap();
+    assert_eq!(releases.len(), RELEASES_PER_PAGE);
+    assert!(parse_release_page(&realistic_page(RELEASES_PER_PAGE + 1)).is_err());
+}
+
+#[test]
+fn a_desktop_release_needs_one_signature_from_its_own_release() {
+    let tag = "desktop-v0.2.0";
+    let mut signed = release(tag, Platform::MacArm64);
+    assert_eq!(
+        signature_asset(&signed).unwrap_err(),
+        Error::Integrity("the release is not signed by OctoSense's release workflow")
+    );
+    signed
+        .assets
+        .push(asset(tag, signature::SIGNATURE_ASSET, b"{}"));
+    let (proof, digest) = signature_asset(&signed).unwrap();
+    assert_eq!(proof.name, signature::SIGNATURE_ASSET);
+    assert_eq!(digest, format!("{:x}", Sha256::digest(b"{}")));
+    // A signature hosted by another release is not this release's.
+    let mut foreign = release(tag, Platform::MacArm64);
+    foreign
+        .assets
+        .push(asset("desktop-v0.1.0", signature::SIGNATURE_ASSET, b"{}"));
+    assert!(signature_asset(&foreign).is_err());
+    signed
+        .assets
+        .push(asset(tag, signature::SIGNATURE_ASSET, b"{}"));
+    assert!(signature_asset(&signed).is_err());
+}
+
+fn operation_directory(root: &Path, prefix: &str, file: Option<&[u8]>) -> PathBuf {
+    let directory = root.join(format!("{prefix}{}", uuid::Uuid::new_v4()));
+    create_private_directory(&directory).unwrap();
+    if let Some(bytes) = file {
+        fs::write(directory.join("OctoSense_0.2.0_aarch64.dmg"), bytes).unwrap();
+    }
+    directory
+}
+#[test]
+fn stale_downloads_are_swept_and_everything_else_is_left_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = prepare_root(&tmp.path().join("updates")).unwrap();
+    let verified = operation_directory(&root, "verified-", Some(b"installer"));
+    let pending = operation_directory(&root, "pending-", Some(b"partial"));
+    let empty = operation_directory(&root, "pending-", None);
+    let nested = operation_directory(&root, "verified-", Some(b"installer"));
+    fs::create_dir(nested.join("inside")).unwrap();
+    let foreign = root.join("verified-not-a-uuid");
+    fs::create_dir(&foreign).unwrap();
+    fs::write(root.join("notes.txt"), b"kept").unwrap();
+
+    // Fresh downloads stay.
+    assert_eq!(sweep_at(&root, SystemTime::now()), 0);
+    // After two hours only the interrupted ones go...
+    let later = SystemTime::now() + Duration::from_secs(2 * 60 * 60);
+    assert_eq!(sweep_at(&root, later), 2);
+    assert!(!pending.exists() && !empty.exists());
+    assert!(verified.exists());
+    // ...and after two days the verified installer too.
+    let much_later = SystemTime::now() + Duration::from_secs(2 * 24 * 60 * 60);
+    assert_eq!(sweep_at(&root, much_later), 1);
+    assert!(!verified.exists());
+    // Never recursive, never a directory this crate did not name.
+    assert!(nested.join("inside").exists() && foreign.exists());
+    assert!(root.join("notes.txt").exists());
+    // A missing cache is not an error.
+    assert_eq!(sweep(&tmp.path().join("missing")), 0);
+}
+#[cfg(unix)]
+#[test]
+fn sweeping_never_follows_a_symlink() {
+    use std::os::unix::fs::symlink;
+    let tmp = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("keep.dmg"), b"precious").unwrap();
+    let root = prepare_root(&tmp.path().join("updates")).unwrap();
+    let linked = root.join(format!("verified-{}", uuid::Uuid::new_v4()));
+    symlink(outside.path(), &linked).unwrap();
+    let directory = operation_directory(&root, "verified-", None);
+    symlink(
+        outside.path().join("keep.dmg"),
+        directory.join("installer.dmg"),
+    )
+    .unwrap();
+    let much_later = SystemTime::now() + Duration::from_secs(3 * 24 * 60 * 60);
+    assert_eq!(sweep_at(&root, much_later), 0);
+    assert!(outside.path().join("keep.dmg").exists());
+    // Nor sweeps a cache reached through a symlink.
+    let alias = tmp.path().join("alias");
+    symlink(&root, &alias).unwrap();
+    assert_eq!(sweep_at(&alias, much_later), 0);
+}

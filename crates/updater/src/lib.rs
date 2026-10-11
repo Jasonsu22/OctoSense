@@ -3,6 +3,8 @@
 //! This crate checks and downloads; it never launches installers or replaces the
 //! running application. Run its blocking public methods on a worker thread. No
 //! account, GitHub token, shell command or application-agent capability is used.
+//! A desktop release is offered only with GitHub's signature on its checksums
+//! (`signature.rs`).
 
 use semver::Version;
 use serde::Deserialize;
@@ -17,17 +19,33 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
+
+mod signature;
 
 const RELEASES_API: &str = "https://api.github.com/repos/OctoSense-org/OctoSense/releases";
 const RELEASES_WEB: &str = "https://github.com/OctoSense-org/OctoSense/releases";
-const MAX_METADATA: u64 = 2 * 1024 * 1024;
+/// GitHub's largest page of releases.
+const RELEASES_PER_PAGE: usize = 100;
+/// One release's JSON carries its notes, its author and every asset with its
+/// uploader: OctoSense's first eight releases took 229,853 bytes, 28 KiB
+/// each. A page must hold a hundred much larger ones, or every check would
+/// fail once the repository has enough releases, and no update could fix it.
+const MAX_RELEASE_JSON: u64 = 160 * 1024;
+const MAX_METADATA: u64 = RELEASES_PER_PAGE as u64 * MAX_RELEASE_JSON;
+/// GitHub lists releases newest first; an update is never older than this.
+const MAX_RELEASE_PAGES: usize = 10;
 const MAX_SUMS: u64 = 256 * 1024;
 const MAX_INSTALLER: u64 = 1024 * 1024 * 1024;
 const MAX_ANDROID_INSTALLER: u64 = 512 * 1024 * 1024;
 const NETWORK_IDLE: Duration = Duration::from_secs(20);
 const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(15 * 60);
+/// A verified download is kept a day after it was last written: an opened
+/// installer or disk image may still be reading it.
+const KEEP_VERIFIED: Duration = Duration::from_secs(24 * 60 * 60);
+/// A partial download outlives its own deadline only when its run ended.
+const KEEP_PENDING: Duration = Duration::from_secs(60 * 60);
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -423,6 +441,7 @@ impl Client {
         if platform.product() != current.product {
             return Err(Error::Unsupported);
         }
+        sweep(&self.cache_dir);
         run(self.check_async(current, channel, platform, cancel))
     }
     pub fn download(
@@ -444,24 +463,15 @@ impl Client {
     ) -> Result<CheckResult> {
         let deadline = Instant::now() + Duration::from_secs(120);
         let mut releases = Vec::new();
-        for page in 1..=10 {
-            let url = format!("{RELEASES_API}?per_page=100&page={page}");
+        for page in 1..=MAX_RELEASE_PAGES {
+            let url = format!("{RELEASES_API}?per_page={RELEASES_PER_PAGE}&page={page}");
             let response = self.request(&url, cancel, deadline).await?;
             let bytes = read_response(response, MAX_METADATA, cancel, deadline).await?;
-            let page_releases: Vec<Release> = serde_json::from_slice(&bytes)
-                .map_err(|_| Error::InvalidMetadata("invalid release list"))?;
-            if page_releases.len() > 100 {
-                return Err(Error::InvalidMetadata("oversized release list"));
-            }
+            let page_releases = parse_release_page(&bytes)?;
             let count = page_releases.len();
             releases.extend(page_releases);
-            if count < 100 {
+            if count < RELEASES_PER_PAGE {
                 break;
-            }
-            if page == 10 {
-                return Err(Error::InvalidMetadata(
-                    "release history exceeds safety limit",
-                ));
             }
         }
         let Some((release, version, asset)) =
@@ -490,6 +500,10 @@ impl Client {
             .await?;
         let bytes = read_response(response, MAX_SUMS, cancel, deadline).await?;
         verify_bytes(&bytes, sums.size, &sums_digest)?;
+        if current.product == Product::Desktop {
+            self.verify_signature(&release, &bytes, cancel, deadline)
+                .await?;
+        }
         verify_checksum_manifest(&bytes, &asset.name, &expected_digest)?;
         let status = update_status(current, &version);
         Ok(CheckResult {
@@ -502,6 +516,28 @@ impl Client {
                 sha256: expected_digest,
             }),
         })
+    }
+    /// A desktop release's checksums must carry GitHub's signature from
+    /// OctoSense's release signing workflow (`signature.rs`). Home needs none:
+    /// Android installs only an APK from the pinned release signer.
+    async fn verify_signature(
+        &self,
+        release: &Release,
+        sums: &[u8],
+        cancel: &Cancellation,
+        deadline: Instant,
+    ) -> Result<()> {
+        let (proof, digest) = signature_asset(release)?;
+        let response = self
+            .request(&proof.browser_download_url, cancel, deadline)
+            .await?;
+        let bytes = read_response(response, signature::MAX_SIGNATURE, cancel, deadline).await?;
+        if bytes.len() as u64 != proof.size || format!("{:x}", Sha256::digest(&bytes)) != digest {
+            return Err(Error::Integrity(
+                "the release signature does not match GitHub metadata",
+            ));
+        }
+        signature::verify(&release.tag_name, sums, &bytes).map_err(Error::Integrity)
     }
     async fn download_async(
         &self,
@@ -645,6 +681,28 @@ struct Release {
     draft: bool,
     prerelease: bool,
     assets: Vec<ReleaseAsset>,
+}
+fn signature_asset(release: &Release) -> Result<(&ReleaseAsset, String)> {
+    let proofs: Vec<_> = release
+        .assets
+        .iter()
+        .filter(|a| a.name == signature::SIGNATURE_ASSET)
+        .collect();
+    let [proof] = proofs.as_slice() else {
+        return Err(Error::Integrity(
+            "the release is not signed by OctoSense's release workflow",
+        ));
+    };
+    let digest = validate_asset(&release.tag_name, proof, signature::MAX_SIGNATURE)?;
+    Ok((proof, digest))
+}
+fn parse_release_page(bytes: &[u8]) -> Result<Vec<Release>> {
+    let releases: Vec<Release> = serde_json::from_slice(bytes)
+        .map_err(|_| Error::InvalidMetadata("invalid release list"))?;
+    if releases.len() > RELEASES_PER_PAGE {
+        return Err(Error::InvalidMetadata("oversized release list"));
+    }
+    Ok(releases)
 }
 fn parse_tag(product: Product, tag: &str) -> Result<Version> {
     if tag.len() > 100
@@ -844,6 +902,80 @@ fn prepare_root(path: &Path) -> Result<PathBuf> {
     validate_directory(path)?;
     path.canonicalize()
         .map_err(|_| Error::Storage("cannot locate update directory"))
+}
+/// Delete the downloads nothing needs any more: a verified installer a day
+/// after it was last written (the person opened it, or never did) and what
+/// an interrupted run left behind. Only `pending-<uuid>` and
+/// `verified-<uuid>` directories holding nothing but regular files are
+/// removed, never recursively; anything else in the cache is left alone.
+/// Returns how many directories were removed.
+pub fn sweep(cache_dir: &Path) -> usize {
+    sweep_at(cache_dir, SystemTime::now())
+}
+fn sweep_at(root: &Path, now: SystemTime) -> usize {
+    if validate_directory(root).is_err() {
+        return 0;
+    }
+    let Ok(entries) = fs::read_dir(root) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let keep = if is_operation_directory(name, "verified-") {
+            KEEP_VERIFIED
+        } else if is_operation_directory(name, "pending-") {
+            KEEP_PENDING
+        } else {
+            continue;
+        };
+        if remove_if_stale(&entry.path(), now, keep) {
+            removed += 1;
+        }
+    }
+    removed
+}
+fn is_operation_directory(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix)
+        .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+}
+fn remove_if_stale(directory: &Path, now: SystemTime, keep: Duration) -> bool {
+    let Ok(meta) = fs::symlink_metadata(directory) else {
+        return false;
+    };
+    if !meta.file_type().is_dir() {
+        return false;
+    }
+    let mut newest = meta.modified().ok();
+    let mut files = Vec::new();
+    let Ok(entries) = fs::read_dir(directory) else {
+        return false;
+    };
+    for entry in entries {
+        let Ok((path, meta)) = entry.and_then(|entry| {
+            let path = entry.path();
+            fs::symlink_metadata(&path).map(|meta| (path, meta))
+        }) else {
+            return false;
+        };
+        if !meta.file_type().is_file() {
+            return false;
+        }
+        newest = newest.max(meta.modified().ok());
+        files.push(path);
+    }
+    // A clock set back, or a time in the future, keeps the files.
+    let Some(age) = newest.and_then(|newest| now.duration_since(newest).ok()) else {
+        return false;
+    };
+    if age < keep {
+        return false;
+    }
+    // An installer still running on Windows cannot be removed; next time.
+    files.iter().all(|file| fs::remove_file(file).is_ok()) && fs::remove_dir(directory).is_ok()
 }
 struct PendingDownload {
     offer: Offer,

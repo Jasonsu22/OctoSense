@@ -11976,11 +11976,15 @@ dependencies = [
 name = "octosense-updater"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "reqwest 0.12.28",
  "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "sigstore-trust-root",
+ "sigstore-types",
+ "sigstore-verify",
  "tempfile",
  "tokio",
  "uuid",
@@ -11994,6 +11998,8 @@ dependencies = [
  "makepad-widgets",
  "octosense-updater",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]

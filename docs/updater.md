@@ -17,9 +17,9 @@ An installed RC defaults to the release-candidate channel. Versions compare
 numerically: `rc.10` follows `rc.9`, and the corresponding stable version follows
 its RCs. Switching channels does not permit a downgrade.
 
-This updater is introduced by this source change. Published desktop
-`0.1.0-rc.2` and Home `0.1.0-beta.2` do not contain it; install a newer release
-containing the updater once to get this interface. Unversioned development
+This updater is introduced by this source change. Published desktop releases
+up to `0.1.0-rc.5` and Home `0.1.0-beta.2` do not contain it; install a newer
+release containing the updater once to get this interface. Unversioned development
 builds do not know their installed release and cannot offer an update.
 
 ## Installation
@@ -28,14 +28,25 @@ builds do not know their installed release and cannot offer an update.
 | --- | --- | --- |
 | macOS, Apple silicon | Opens the verified `.dmg` | Quit OctoSense, drag the new app into Applications, confirm replacement, then reopen it. |
 | Windows, x64 | Starts the verified NSIS `.exe` directly | Follow its prompts; close OctoSense when requested. |
-| Linux, x86_64, Debian package | Opens the verified `.deb` with the desktop's package handler | Approve the package installation, then restart. Without a desktop package handler, use the distribution's package manager. |
-| Linux, x86_64, AppImage | Opens the download folder | Quit OctoSense, replace the old AppImage, allow execution in its file properties, then reopen it. The updater does not overwrite the running image. |
+| Linux, x86_64, Debian package | Saves a copy of the verified `.deb` in the Downloads folder, checks it, and opens it with the desktop's package handler | Approve the package installation, then restart. Without a desktop package handler, install that file with the distribution's package manager. |
+| Linux, x86_64, AppImage | Saves a checked, executable copy in the Downloads folder and opens that folder | Quit OctoSense, replace the old AppImage with the new one, then open it. The updater does not overwrite the running image. |
 | Android, ARM64 | Checks the verified APK against installed Home and stages it with Android's package installer | Review and confirm the operating system's installation prompt. |
 
 Opening an installer does **not** report a completed installation. This first
 version does not check periodically, silently quit, elevate itself, overwrite
-the running application, or remove the user's profile. OS installation and
-signature checks still apply.
+the running application, or remove the user's profile. The operating system's
+installer still runs its own checks, but macOS and Windows do not show the
+warnings they give a file downloaded in a browser (Gatekeeper's, SmartScreen's):
+the updater does not mark its downloads as coming from the internet. It relies
+on GitHub's signature on the release instead ([Verification and
+privacy](#verification-and-privacy)).
+
+Linux package handlers may be unable to read the hidden profile folder the
+download lives in (Ubuntu's App Center is a snap, and snaps cannot see hidden
+folders), so Linux packages are handed over from the Downloads folder
+(`XDG_DOWNLOAD_DIR`, else `~/Downloads`). A file of the same name there is never
+replaced: the copy takes the next free name, such as
+`octosense_0.2.0_amd64 (2).deb`. Copies in Downloads are yours to delete.
 
 Android 13 (API 33) or newer is required. Android updates **standalone Home** only. System Bridge and ROM updates remain
 separate. The installed package and candidate must have the public standalone
@@ -45,7 +56,10 @@ version code and a compatible minimum Android version. If Android has not
 allowed OctoSense to install packages, the user can open its permission settings,
 return, and explicitly try installation again. No automatic installation resumes
 after changing that permission. An APK is never installed by first uninstalling
-Home to bypass a signer mismatch.
+Home to bypass a signer mismatch. **Review and install update** and **Allow
+updates in Android Settings** act only on a real tap on the screen: Makepad's
+input provenance, which a script, a remote control or a synthetic click cannot
+produce.
 
 ## Verification and privacy
 
@@ -58,19 +72,46 @@ checks the checksum file's own digest, requires its installer hash to match
 GitHub's metadata, then verifies the complete downloaded installer and declared
 size. Downloads use private staging and are rechecked before OS handoff.
 Malformed metadata, unexpected URLs, symlinks, incomplete or modified files are
-refused. This trusts the project's GitHub release account over HTTPS; a checksum
-is not an independent publisher signature.
+refused.
+
+Digests and checksums only prove that the files are the release's own: anyone
+who can publish a release can make them agree. So a desktop release is offered
+only when its `SHA256SUMS` also carries **GitHub's signature** from the
+[`sign-desktop-release`](../.github/workflows/sign-desktop-release.yml)
+workflow, run on `main` in the `desktop-release-signing` environment, whose
+reviewers approve each run. The signature is a Sigstore bundle attached to the
+release as `SHA256SUMS.sigstore.json`. The updater verifies it offline, the way
+a device verifies App Hub's catalog: the certificate, its timestamps and the
+transparency-log proof against Sigstore's public trust root; then GitHub's
+claims about the run (this repository and its owner, that workflow on `main`, a
+manual run, that environment, a GitHub-hosted runner); then the signed subject,
+`<tag>.SHA256SUMS` with the exact digest of the file it downloaded. A desktop
+release without that signature is refused with an error, not skipped. Android
+Home needs none: Android installs only an APK signed with the pinned standalone
+release key.
+
+The release list is read newest first, at most ten pages of 100 releases; a
+page may hold up to 16 MB (a release's notes and asset list took about 28 KB in
+October 2026).
 
 Desktop downloads live in the shell's `updates/` directory (`OCTOSENSE_HOME` if
 set, otherwise `~/.octosense/updates`). Android uses app-private cache under
-`octosense-updates/`. Checking releases needs no OctoSense, GitHub or Google
+`octosense-updates/`. A verified download is deleted a day after it was last
+written, whether or not its installer was opened, and an interrupted one after
+an hour; this happens when OctoSense starts and before each check. Only the
+updater's own `verified-…` and `pending-…` folders holding plain files are
+removed, never recursively. Checking releases needs no OctoSense, GitHub or Google
 login. No mail, app contents, model credentials or agent conversations are sent.
 The updater is a native host interface, not an App Hub app or an agent tool.
 
 ## Code and release identity
 
 - [`crates/updater`](../crates/updater/src/lib.rs) owns channels, release
-  selection, bounded downloads, cancellation and verified artifacts.
+  selection, bounded downloads, cancellation, verified artifacts and removing
+  stale downloads. Its [`signature.rs`](../crates/updater/src/signature.rs)
+  verifies GitHub's signature on a desktop release's `SHA256SUMS`, which
+  [`sign-desktop-release.yml`](../.github/workflows/sign-desktop-release.yml)
+  makes for each release ([desktop/README.md](../desktop/README.md#cutting-a-desktop-release)).
 - [`crates/updater-ui`](../crates/updater-ui/src/lib.rs) owns the native module
   and explicit user actions. Network work and hashing run off the drawing thread.
 - [`install.rs`](../crates/updater-ui/src/install.rs) uses literal arguments
@@ -116,6 +157,17 @@ missing-checksum fallback.
 Desktop handoff tests check executable names and literal arguments without
 launching installers. Packaging tests verify identities, stale-binary refusal
 and build planning without producing release packages.
+
+The signature check is tested with a public Sigstore bundle: it verifies
+cryptographically, and is refused as another workflow's. Tampered signatures
+and transparency proofs, other workflows, branches, issuers and trust roots,
+every missing or wrong GitHub claim, and a statement naming another release or
+other bytes are refused too. The signing workflow's release check passed on
+the published `desktop-v0.1.0-rc.5` and `rc.2` and refused `beta.2`, which has
+no `SHA256SUMS`. No release has been signed yet, so a signed release checked
+end to end remains **unverified**, as does Android's real-tap check on a
+device. Removing stale downloads and the Linux copy into Downloads are tested
+in temporary folders; the actual Linux handoff remains **unverified**.
 
 A hidden native macOS UI checked the live RC1 → RC2 offer and downloaded and
 verified its 297 MB disk image. A deliberate change to that isolated download

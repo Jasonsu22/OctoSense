@@ -26,7 +26,13 @@ static REQUEST: AtomicU64 = AtomicU64::new(1);
 static ANDROID: Mutex<Vec<serde_json::Value>> = Mutex::new(Vec::new());
 
 /// The shell supplies a host-private directory, outside every app's storage jail.
+/// Downloads an earlier run opened or left behind are removed off the UI
+/// thread (`octosense_updater::sweep`).
 pub fn configure(cache: PathBuf) {
+    let stale = cache.clone();
+    let _ = std::thread::Builder::new()
+        .name("octosense-updater-sweep".into())
+        .spawn(move || octosense_updater::sweep(&stale));
     let _ = CACHE.set(cache);
 }
 
@@ -166,6 +172,11 @@ pub struct UpdaterView {
     android_install_pending: bool,
     #[rust]
     install_opened: bool,
+    /// Whether the press of the Install and Allow buttons was a real tap.
+    #[rust]
+    install_down: bool,
+    #[rust]
+    permission_down: bool,
 }
 
 impl UpdaterView {
@@ -361,7 +372,8 @@ impl UpdaterView {
         }));
     }
 
-    fn install(&mut self) {
+    /// `tapped`: the click's press and release were both real taps.
+    fn install(&mut self, tapped: bool) {
         if self.task.is_some() || self.android_install_pending {
             return;
         }
@@ -369,7 +381,7 @@ impl UpdaterView {
             return;
         };
         // Android's PackageInstaller requires its own human confirmation as well.
-        if cfg!(target_os = "android") && !makepad_widgets::makepad_platform::trusted_user_input() {
+        if cfg!(target_os = "android") && !tapped {
             self.message = "Tap Install directly on the phone to review this update.".into();
             return;
         }
@@ -549,61 +561,73 @@ impl Widget for UpdaterView {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
         self.initialize(cx);
         self.poll(cx);
-        self.view.handle_event(cx, event, scope);
-        if let Event::Actions(actions) = event {
-            let changed = [
-                ids!(channel),
-                ids!(check),
-                ids!(download),
-                ids!(cancel),
-                ids!(install),
-                ids!(notes),
-                ids!(permission),
-                ids!(retry_install),
-            ]
-            .iter()
-            .any(|id| self.view.button(cx, *id).clicked(actions));
-            if !changed {
-                return;
-            }
-            if self.view.button(cx, ids!(channel)).clicked(actions)
-                && self.task.is_none()
-                && !self.android_install_pending
-            {
-                self.channel = (self.channel + 1) % 3;
-                self.retire_offer();
-                self.message = "Channel changed. Check for updates to continue.".into();
-            }
-            if self.view.button(cx, ids!(check)).clicked(actions) {
-                self.check();
-            }
-            if self.view.button(cx, ids!(download)).clicked(actions) {
-                self.download();
-            }
-            if self.view.button(cx, ids!(cancel)).clicked(actions) {
-                if let Some(task) = &self.task {
-                    task.cancel.cancel();
-                    self.message = "Cancelling…".into();
-                }
-            }
-            if self.view.button(cx, ids!(install)).clicked(actions) {
-                self.install();
-            }
-            if self.view.button(cx, ids!(notes)).clicked(actions) {
-                if let Some(offer) = &self.offer {
-                    cx.open_url(&offer.release_url(), OpenUrlInPlace::No);
-                }
-            }
-            if self.view.button(cx, ids!(permission)).clicked(actions)
-                && makepad_widgets::makepad_platform::trusted_user_input()
-            {
-                self.android_command(cx, "update_allow_install", serde_json::json!({}));
-            }
-            if self.view.button(cx, ids!(retry_install)).clicked(actions) {
-                self.android_command(cx, "update_status", serde_json::json!({}));
-            }
-            self.refresh(cx);
+        // Read this view's clicks while the input that made them is still
+        // being handled: only then does `trusted_user_input` report a real
+        // tap, which Android's install and permission steps require, as in
+        // the host's other approval sheets (`connected_review.rs`). A click
+        // read later from `Event::Actions` is never a trusted one.
+        let actions = cx.capture_actions(|cx| self.view.handle_event(cx, event, scope));
+        let trusted = makepad_widgets::makepad_platform::trusted_user_input();
+        if self.view.button(cx, ids!(install)).pressed(&actions) {
+            self.install_down = trusted;
         }
+        if self.view.button(cx, ids!(permission)).pressed(&actions) {
+            self.permission_down = trusted;
+        }
+        let changed = [
+            ids!(channel),
+            ids!(check),
+            ids!(download),
+            ids!(cancel),
+            ids!(install),
+            ids!(notes),
+            ids!(permission),
+            ids!(retry_install),
+        ]
+        .iter()
+        .any(|id| self.view.button(cx, *id).clicked(&actions));
+        if !changed {
+            return;
+        }
+        if self.view.button(cx, ids!(channel)).clicked(&actions)
+            && self.task.is_none()
+            && !self.android_install_pending
+        {
+            self.channel = (self.channel + 1) % 3;
+            self.retire_offer();
+            self.message = "Channel changed. Check for updates to continue.".into();
+        }
+        if self.view.button(cx, ids!(check)).clicked(&actions) {
+            self.check();
+        }
+        if self.view.button(cx, ids!(download)).clicked(&actions) {
+            self.download();
+        }
+        if self.view.button(cx, ids!(cancel)).clicked(&actions) {
+            if let Some(task) = &self.task {
+                task.cancel.cancel();
+                self.message = "Cancelling…".into();
+            }
+        }
+        if self.view.button(cx, ids!(install)).clicked(&actions) {
+            let down = std::mem::take(&mut self.install_down);
+            self.install(down && trusted);
+        }
+        if self.view.button(cx, ids!(notes)).clicked(&actions) {
+            if let Some(offer) = &self.offer {
+                cx.open_url(&offer.release_url(), OpenUrlInPlace::No);
+            }
+        }
+        if self.view.button(cx, ids!(permission)).clicked(&actions)
+            && std::mem::take(&mut self.permission_down)
+            && trusted
+        {
+            self.android_command(cx, "update_allow_install", serde_json::json!({}));
+        }
+        if self.view.button(cx, ids!(retry_install)).clicked(&actions) {
+            self.android_command(cx, "update_status", serde_json::json!({}));
+        }
+        self.refresh(cx);
     }
 }
 
