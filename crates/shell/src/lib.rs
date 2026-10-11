@@ -565,6 +565,9 @@ pub struct App {
     #[rust]
     pub test_page: Option<(Timer, i64)>,
     #[rust] pub test_glance_fixtures: Option<(Timer, String)>,
+    /// `--test-action host-fullscreen`: behave as if the window were full
+    /// screen on its host, which a hidden run cannot enter.
+    #[rust] test_host_fullscreen: bool,
     /// The hidden WebView that renders pages for the octos reader where
     /// there is no Chrome (the phone): serves `webview_render::renderer`.
     #[rust]
@@ -776,7 +779,9 @@ impl App {
     fn dock_overlay(&self, cx: &mut Cx, area: LRect) -> f64 {
         let rect = self.desk(cx).borrow_mut::<WmDesk>().map(|d| d.desk_rect).unwrap_or_default();
         let desk_bottom = if rect.size.x > 1.0 { rect.pos.y + rect.size.y } else { 860.0 };
-        self.state.as_ref().map_or(0.0, |s| desktop::dock_overlay(&s.style, desk_bottom, area.y + area.h))
+        // A dock that hides covers nothing a window keeps clear of.
+        self.state.as_ref().filter(|s| !desktop::dock_auto_hides(s))
+            .map_or(0.0, |s| desktop::dock_overlay(&s.style, desk_bottom, area.y + area.h))
     }
 
     fn desk_area(&self, cx: &mut Cx) -> LRect {
@@ -2679,9 +2684,10 @@ impl App {
             Some(instance) => (instance.manifest(), instance.root.clone(), instance.vm_id),
             None => return,
         };
-        self.state_mut()
-            .clients
-            .insert(id, clients::ClientSlot::module(id, &app.id, &app.label));
+        let mut slot = clients::ClientSlot::module(id, &app.id, &app.label);
+        // Host services know a script app in front by its manifest id.
+        slot.card_app = apps::card_manifest_id(app).map(str::to_owned);
+        self.state_mut().clients.insert(id, slot);
         let gap = self.state_mut().gap;
         // A script app may ask its desktop window to open at a size (its
         // manifest's `window`), which the desk clamps; without one, or for
@@ -2891,7 +2897,10 @@ impl App {
                     let id = self.next_id;
                     self.next_id += 1;
                     let area = self.desk_area(cx);
-                    self.state_mut().clients.insert(id, clients::ClientSlot::module(id, app, &title));
+                    let mut slot = clients::ClientSlot::module(id, app, &title);
+                    // An instance's extra window is its app in front too.
+                    slot.card_app = self.state.as_ref().and_then(|s| s.clients.get(&owner)).and_then(|o| o.card_app.clone());
+                    self.state_mut().clients.insert(id, slot);
                     let gap = self.state_mut().gap;
                     self.state_mut().layout.insert(id, area, gap);
                     self.desk(cx).borrow_mut::<WmDesk>().map(|mut d| {
@@ -5481,6 +5490,20 @@ impl App {
                         i += 2;
                         continue;
                     }
+                    // host-fullscreen: the shell behaves as if its window were
+                    // full screen on its host (a hidden run cannot enter one),
+                    // so a floating dock hides until the pointer comes to the
+                    // bottom edge (`desktop::dock_auto_hides`).
+                    if name == "host-fullscreen" {
+                        log!("wm: --test-action host-fullscreen");
+                        self.test_host_fullscreen = true;
+                        if let Some(state) = self.state.as_mut() {
+                            state.host_fullscreen = true;
+                        }
+                        self.redraw_all(cx);
+                        i += 2;
+                        continue;
+                    }
                     if let Some(app) = name.strip_prefix("launch-") {
                         let app = app.to_string();
                         log!("wm: --test-action launch {}", app);
@@ -5960,6 +5983,8 @@ mod app_hub_lifecycle_tests {
             dragging: Vec::new(),
             drop_hint: None,
             pane_sliding: false,
+            host_fullscreen: false,
+            dock_reveal: 1.0,
         });
         // Real module isolates exercise shutdown and client removal without
         // requiring a downloaded Card or changing the machine's catalog.
@@ -6104,6 +6129,8 @@ impl MatchEvent for App {
             dragging: Vec::new(),
             drop_hint: None,
             pane_sliding: false,
+            host_fullscreen: false,
+            dock_reveal: 1.0,
             style: Default::default(),
             material,
             roles,
@@ -6112,6 +6139,8 @@ impl MatchEvent for App {
         // the one path a style switch uses.
         self.apply_material_to_chrome(cx, material, None);
         self.next_id = 1;
+        #[cfg(any(feature = "app-updater", native_mobile))]
+        octosense_updater_ui::configure(crate::octosense::paths::home().join("updates"));
         // The hosting registry: the linked modules, the person's overrides
         // in ~/.makepad/wm/apps.splash, a dev run's `--module <id>` flags.
         let args: Vec<String> = std::env::args().collect();
@@ -6534,6 +6563,10 @@ impl App {
     }
 
     pub fn shell_handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        #[cfg(any(feature = "app-updater", native_mobile))]
+        if let Event::AndroidIntegration { channel, payload } = event {
+            if channel == "home_updater.result" { octosense_updater_ui::android_result(payload); }
+        }
         #[cfg(any(feature = "app-hub", native_mobile))]
         self.audio_session_event(cx, event);
         #[cfg(any(feature = "app-hub", native_mobile))]
@@ -6588,10 +6621,9 @@ impl App {
             } else {
                 state.layout.focused_client()?
             };
-            let app = &state.clients.get(&client)?.app;
-            // Hosted Hub previews have no dedicated client identity. They
-            // must open the installed app before requesting native audio.
-            app.strip_prefix("hub:").map(str::to_owned)
+            // A system app in front is its manifest id as much as an
+            // installed one; a hosted Hub preview is none (`foreground_app`).
+            state.clients.get(&client)?.foreground_app()
         });
         let foreground = glance.or(focused);
         files_service::set_foreground_app(foreground.clone());
@@ -6668,6 +6700,13 @@ impl App {
             }
             // The bar is the caption: keep it around the OS buttons.
             self.update_bar_chrome(cx, &ev.new_geom);
+            // A full-screen shell hides its floating dock until the pointer
+            // comes to the bottom edge (`desktop::dock_auto_hides`).
+            let fullscreen = ev.new_geom.is_fullscreen || self.test_host_fullscreen;
+            if self.state.as_ref().is_some_and(|s| s.host_fullscreen != fullscreen) {
+                self.state_mut().host_fullscreen = fullscreen;
+                self.redraw_all(cx);
+            }
             // A warm instance is configured with the desktop's own dpi, so
             // what it warms up is what its tile will use.
             self.dpi_factor = ev.new_geom.dpi_factor;

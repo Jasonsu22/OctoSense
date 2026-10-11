@@ -491,9 +491,12 @@ impl App {
             Event::Scroll(e) => e.abs,
             _ => return false,
         };
+        // The launcher a dock opened keeps a hiding dock up under it.
+        let held = self.ui.widget(cx, ids!(shell_menu)).borrow::<ShellMenu>().is_some_and(|m| m.is_open());
         let shelf = self.ui.widget(cx, ids!(desktop_shelf));
         let (hit, inside) = if let Some(mut s) = shelf.borrow_mut::<DesktopShelf>() {
             s.hover_at(cx, p);
+            s.auto_hide_pointer(cx, Some(p), held);
             (s.hit(p), s.contains(p))
         } else {
             (None, false)
