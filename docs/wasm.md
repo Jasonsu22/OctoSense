@@ -12,7 +12,7 @@ have it and how it was checked. This page describes the current source tree.
 Desktop 0.1.0-rc.2 and Home 0.1.0-beta.2 contain ADR 0011 core modules.
 ADR 0014 shared components and the declaration-only changes below passed
 final-source acceptance at `8b09e05d` on macOS and OnePlus 6.
-[Desktop RC5](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.5) at `83d356c2` (11 October 2026) was
+[Desktop RC5](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.5) at `83d356c2` (11 October 2026) is
 the first release in which a component's HTTPS request works ([#471](https://github.com/OctoSense-org/OctoSense/pull/471):
 RC4 panicked while choosing a TLS provider on the first `wasi:http`
 request) and the first with the native charts an app can require through
@@ -21,7 +21,7 @@ the first component app installed from the official public catalog: its
 [public-store acceptance](https://github.com/ymote/octosense-repo-radar/blob/main/review/acceptance-public-store-0.1.2.json) passed 93 native checks covering
 live GitHub requests from the component, native charts and
 component-owned state across a restart. [Desktop RC6](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.6) keeps all of
-this and adds sockets ([below](#components)). [Desktop RC4](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.4)
+this and adds sockets. [Desktop RC4](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.4)
 at `9266b008` brought the component runtime; its [archive evidence](../tools/fixtures/wasm-phone-lab/README.md#rc4-release-evidence)
 records the actual package, signing and acceptance boundaries.
 The isolated phone fixtures did not update installed Home.
