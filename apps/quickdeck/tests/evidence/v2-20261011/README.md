@@ -28,9 +28,9 @@ Sheets and frames are halved and reduced to 256 colours.
 
 **A hidden desktop shell with the real `deck` engine** (Ubuntu 26.04 LTS,
 x86_64, 72 CPUs, no GPU): the shell (`cargo build --locked -p octosense
---no-default-features --features app-hub,craft-engines`) was built from a
-local scratch merge of this branch with the deck service's branch,
-`feat/deck-service-v2` at 74be4c07 (#503), never pushed. ui.py gave the run a
+--no-default-features --features app-hub,craft-engines`) was built from this
+branch rebased on main 202d7cc8, which has the deck service (#503, merged
+from a1a0b496, with the import guard's final rules). ui.py gave the run a
 fresh `OCTOSENSE_HOME` and a headless weston of its own (pixman, never idle),
 as PDF Tools' Linux runs do, and ended the shell with `/quit`. Every engine
 call was real. The shell opened Quick Deck at 1296 x 698 points (the dock
@@ -52,5 +52,9 @@ the designs' 1536 x 1024. Each frame is the app's window cut from an original
 - [linux-restart/](linux-restart): the same home after a restart: the deck in
   the library with its cover and the slide count its last save wrote, and
   the deck opened again.
+
+The rounds before these ran on a local merge of this branch with the
+service's branch at 74be4c07; what they found and what was fixed is in the
+receipt.
 
 Every frame was inspected.

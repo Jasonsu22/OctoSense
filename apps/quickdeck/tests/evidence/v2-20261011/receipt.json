@@ -12,7 +12,7 @@
   "makepad": "d653bc44 with runtime-patches.lock.json (tools/setup.py)",
   "app_hub_pin": "386359153ed6377b5f047bd9ed2767a6a2ac2bc7 (root Cargo.toml)",
   "deckcraft": "d0e57d7e25f9852179cc66be12dd6188f1c05535",
-  "deck_service": "feat/deck-service-v2 at 74be4c07 (#503), merged locally for the shell runs only; never pushed"
+  "deck_service": "the deck service as merged into main in 202d7cc8 (#503, from head a1a0b496): the shell runs below used it. Rounds 1 to 10 used a local merge with the service's branch at 74be4c07, never pushed"
  },
  "card_host": {
   "machine": "macOS 26.6.2, Apple silicon (arm64)",
@@ -26,19 +26,20 @@
    "states": "passed, light and dark: damaged, protected, held, unsupported, unsaved changes, storage full, empty library"
   },
   "load_averages": "about 9 to 20 during the final run",
-  "log_errors": "none (no script error, no budget overrun)"
+  "log_errors": "none (no script error, no budget overrun)",
+  "bundle_note": "the rebase onto main 202d7cc8 changed no file of the app, its fixture or its tests (the digests under bundle are the same before and after), so the card-host frames stand"
  },
  "shell": {
   "machine": "Ubuntu 26.04 LTS, x86_64, 72 CPUs, no GPU; weston 14.0.2 headless (pixman), Mesa llvmpipe",
-  "build": "cargo build --locked -p octosense --no-default-features --features app-hub,craft-engines (dev profile)",
-  "binary_sha256": "29d3e378a776e6374489e51499af7b2d90e2730cc420242f3f3ab84dfa7d2924",
+  "build": "cargo build --locked -p octosense --no-default-features --features app-hub,craft-engines (dev profile), from this branch rebased on main 202d7cc8, in a scratch checkout of exactly that tree",
+  "binary_sha256": "7a455d0ac9ae64d406b21da3a5a822b1d49f209e0773a6a62de3c7044a5b6697",
   "command": "python3 apps/quickdeck/tests/ui.py --shell target/debug/octosense --lock <dir> --work <dir> --grab-scale 1 --output <dir> --port 8936",
   "window": "Quick Deck asked for 1536 x 1024 and opened at 1296 x 698 (the dock covers 78 points of the 1400 x 900 desk): an app area of 1292 x 662",
   "runs": {
-   "shell": "passed, light, then dark through the shell's style menu, at the runtime's 64 ms budget (shell run 10, 19:36 to 19:39 UTC, host load averages about 8 to 30): Home; Draft with AI answering no_provider; a 4-slide deck from the typed outline (deck.create); text edited in place (deck.view editing, deck.set_text); bold (deck.format); a chart with the engine's sample data and its grid (deck.insert, deck.slide); undo and redo; a layout; the Ember theme (deck.design); notes (deck.notes); the sorter: duplicate, hide, a section (deck.slides_op); save; .pptx and PDF exports (deck.export); Present (deck.show, deck.view step). No script error and no budget overrun in the log; four 'script_result dropped' warnings (a nested region answered after its holder was drawn again)",
+   "shell": "passed, light, then dark through the shell's style menu, at the runtime's 64 ms budget (20:52 to 20:55 UTC, host load averages about 16 to 24): Home; Draft with AI answering no_provider; a 4-slide deck from the typed outline (deck.create); text edited in place (deck.view editing, deck.set_text); bold (deck.format); a chart with the engine's sample data and its grid (deck.insert, deck.slide); undo and redo; a layout; the Ember theme (deck.design); notes (deck.notes); the sorter: duplicate, hide, a section (deck.slides_op); save; .pptx and PDF exports (deck.export); Present (deck.show, deck.view step). No script error and no budget overrun in the log; four 'script_result dropped' warnings (a nested region answered after its holder was drawn again)",
    "restart": "passed: the deck in the library after a restart ('6 slides  ·  5 KB', its cover drawn by deck.cover), opened again at 6 slides"
   },
-  "model_tests": "cargo test --locked -p octosense-shell --lib quickdeck_model: 22 passed; with --features app-hub: 23 passed (the manifest's window hint too)"
+  "model_tests": "on the same rebased tree: cargo test --locked -p octosense-shell --lib quickdeck_model: 22 passed; with --features app-hub: 23 passed (the manifest's window hint too)"
  },
  "rounds": [
   {
@@ -100,6 +101,14 @@
   {
    "round": "shell 9",
    "result": "shell passed, light and dark; restart failed: the deck's card was below the fold; fixed in ui.py"
+  },
+  {
+   "round": "shell 10",
+   "result": "shell and restart passed on the local merge with the service's branch at 74be4c07 (the frames this receipt first carried)"
+  },
+  {
+   "round": "shell 11 (the evidence)",
+   "result": "after the rebase onto main 202d7cc8 with the merged service and the guard's final rules: shell and restart passed; nothing changed for the app"
   }
  ],
  "not_verified": [
@@ -109,5 +118,6 @@
   "Pictures and tables inserted with the real engine, the shape gallery, layouts and backgrounds beyond one layout change, Present's notes strip with long notes, images export, undo after a save and reopen",
   "Windows narrower than 1180 points (the floating inspector), other screen sizes, phones",
   "The designs' exact sizes: the shell's window is 1292 x 662, not 1536 x 1024"
- ]
+ ],
+ "base": "main 202d7cc8 (#503 merged); the branch is rebased on it"
 }

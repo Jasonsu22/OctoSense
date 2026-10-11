@@ -198,8 +198,8 @@ the frames, side-by-sides and receipt.
   runtime's 64 ms budget): the `missing`, `fixture` and `states` runs, light
   and dark, with no script error in their logs.
 - **Verified on 11 Oct 2026, with the real engine** (Linux, a hidden desktop
-  shell on headless weston, built from this branch merged locally with the
-  deck service's branch of #503 at 74be4c07): the `shell` run, light then
+  shell on headless weston, built from this branch on main 202d7cc8, which
+  has the deck service of #503): the `shell` run, light then
   dark, and `restart`, at the runtime's 64 ms budget with no script error or
   overrun. The shell opened Quick Deck at 1296 x 698 points (an app area of
   1292 x 662). The model tests pass there (22; 23 with `--features app-hub`,
