@@ -6,6 +6,8 @@ English | [简体中文](README.zh-CN.md)
 
 [Host OS API status](docs/host-os-api-status.md) tracks file, location and external-link support, existing services, remaining gaps and validation limits.
 
+[OctoSense Updates](docs/updater.md) checks and downloads verified host releases, then opens the OS installation flow. It ships in builds containing this change; older releases need one manual upgrade first.
+
 [Capabilities and execution boundaries](docs/capabilities.md) explains declaration-only APIs, consent, accounts and app isolation.
 
 **Desktop prerelease download:** [OctoSense 0.1.0-rc.4](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.4) includes app-contract 1.11.0, shared Wasm components, GitHub-attested app installation and declaration-only public API capabilities. Choose an asset for your operating system and architecture; the release notes record signing, prerequisites and platform acceptance limits. This desktop release does not update Android Home.

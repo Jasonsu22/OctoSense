@@ -6,6 +6,8 @@
 
 [宿主 OS API 状态](docs/host-os-api-status.zh-CN.md)记录文件、定位和外部链接支持，以及已有服务、剩余缺口和验证范围。
 
+[OctoSense Updates](docs/updater.zh-CN.md) 检查并下载经过校验的宿主发行版，再打开操作系统安装流程。此功能随本次变更引入；旧版本需要先手动升级一次。
+
 [能力声明与执行边界](docs/capabilities.zh-CN.md)说明声明式 API、用户同意、账户和应用隔离。
 
 **桌面预发布版下载**：[OctoSense 0.1.0-rc.4](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.4) 包含应用契约 1.11.0、共享 Wasm 组件、GitHub 证明应用安装，以及“能力仅用于声明”的公开 API 策略。请选择与操作系统和架构对应的文件；签名、前置条件及各平台验收限制见发行说明。此桌面版本不会更新 Android Home。
