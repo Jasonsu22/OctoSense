@@ -2637,9 +2637,10 @@ impl App {
             Some(instance) => (instance.manifest(), instance.root.clone(), instance.vm_id),
             None => return,
         };
-        self.state_mut()
-            .clients
-            .insert(id, clients::ClientSlot::module(id, &app.id, &app.label));
+        let mut slot = clients::ClientSlot::module(id, &app.id, &app.label);
+        // Host services know a script app in front by its manifest id.
+        slot.card_app = apps::card_manifest_id(app).map(str::to_owned);
+        self.state_mut().clients.insert(id, slot);
         let gap = self.state_mut().gap;
         // A script app may ask its desktop window to open at a size (its
         // manifest's `window`), which the desk clamps; without one, or for
@@ -2849,7 +2850,10 @@ impl App {
                     let id = self.next_id;
                     self.next_id += 1;
                     let area = self.desk_area(cx);
-                    self.state_mut().clients.insert(id, clients::ClientSlot::module(id, app, &title));
+                    let mut slot = clients::ClientSlot::module(id, app, &title);
+                    // An instance's extra window is its app in front too.
+                    slot.card_app = self.state.as_ref().and_then(|s| s.clients.get(&owner)).and_then(|o| o.card_app.clone());
+                    self.state_mut().clients.insert(id, slot);
                     let gap = self.state_mut().gap;
                     self.state_mut().layout.insert(id, area, gap);
                     self.desk(cx).borrow_mut::<WmDesk>().map(|mut d| {
@@ -6508,10 +6512,9 @@ impl App {
             } else {
                 state.layout.focused_client()?
             };
-            let app = &state.clients.get(&client)?.app;
-            // Hosted Hub previews have no dedicated client identity. They
-            // must open the installed app before requesting native audio.
-            app.strip_prefix("hub:").map(str::to_owned)
+            // A system app in front is its manifest id as much as an
+            // installed one; a hosted Hub preview is none (`foreground_app`).
+            state.clients.get(&client)?.foreground_app()
         });
         let foreground = glance.or(focused);
         files_service::set_foreground_app(foreground.clone());
