@@ -220,14 +220,19 @@ that refusal.
   budget, in the wide layout (an app area of 1292 x 662); and, opened from the
   shell's menu, a 1296 x 703 window on a 1380 x 845 work area, 32 points
   above the dock.
-- **Verified on 10 Oct 2026, the follow-ups** (macOS, Apple silicon;
+- **Verified on 10 and 11 Oct 2026, the follow-ups** (macOS, Apple silicon;
   [tests/evidence/v2-followups-20261010](tests/evidence/v2-followups-20261010/README.md)):
   the model tests; the `shell`, `restart`, `full` and `empty` runs in a hidden
-  desktop shell with the real engine at the runtime's 64 ms budget, at the
-  window's own size (an app area of 1292 x 662): comment dates in local time,
-  the Edit panel's Alignment and Colour, the storage line from
-  `files.status`, covers kept across closes and a restart, Combine's button in
-  view with two PDFs; and the `fixture` run in card-host at 1536 x 1024.
+  desktop shell with the real engine, at the window's own size (an app area
+  of 1292 x 662): comment dates in local time, the Edit panel's Alignment and
+  Colour, the storage line from `files.status`, covers kept across closes and
+  a restart and removed with their PDF, Combine's button in view with two
+  PDFs, one search in the top bar, and Read mode; and the `fixture` run in
+  card-host at 1536 x 1024. On 10 Oct, before one search and Read mode, those
+  runs passed at the runtime's 64 ms budget. On 11 Oct they ran with
+  `--budget-ms 1000`: at 64 ms, under load averages of 54 to 74, the `shell`
+  run passed every step but overran the budget after UI-thread stalls in the
+  pdf service's file renames.
 - **Not verified**: the host's file dialog and a real import (a hidden window
   cannot open it); with the real engine, form fields, outlines, Redo, the
   other comment and page operations, password-protected PDFs, the eight-PDF
@@ -238,7 +243,9 @@ that refusal.
   so maximize the window for the full effect. On a heavily loaded machine a
   tap can overrun the 64 ms budget
   and be lost (seen at load averages of 60 to 150 before `library.json` moved
-  off the tap path). On a screen 900 points tall (an app area of about
+  off the tap path). The pdf service's file writes run on the UI thread and
+  count against that budget too (overruns after 262 and 555 ms renames, at
+  load averages of 54 to 74). On a screen 900 points tall (an app area of about
   1292 x 662), Home's last caption line (when each PDF was last opened) sits
   at the fold; the library scrolls. The engine reports neither a
   paragraph's alignment nor its colour: the Edit panel reads the alignment
