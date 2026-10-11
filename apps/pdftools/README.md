@@ -65,7 +65,7 @@ page fits the canvas, up to 100%.
 | Fill & Sign | The form's fields outlined (required empty ones in red) and listed with their values; choose one to type its value; Add text, Add date and Add initials place a mark where you tap; initials are kept | `pdf.fields`, `pdf.fill`, `pdf.fill_sign` |
 | Pages | Every page as a large thumbnail: choose pages, Rotate left or right, Delete, Extract (a new PDF in the library), Insert from file (another PDF here), drag a page to move it | `pdf.pages` |
 | Combine | This PDF and others in order (drag the grip to reorder), each with its pages ("1-4, 9" or All), "One PDF of 31 pages", a name, Combine; the new PDF opens. When the list does not fit the window, it scrolls inside the card and the total, name and Combine stay in view | `pdf.merge` |
-| Edit | Click a paragraph: its text becomes editable in place; the right panel shows its font and size, its Alignment (left, centre, right or justify: the one its lines show is chosen, since the engine sets an edited paragraph flush left unless told) and its Colour (its own until you pick one of six); Apply or Cancel | `pdf.lines`, `pdf.edit_text` |
+| Edit | Click a paragraph: its text becomes editable in place; the right panel shows its font and size, its Alignment (left, centre, right or justify: the one its lines show is chosen, since the engine sets an edited paragraph flush left unless told) and its Colour (its own until you pick one of six); before Apply it says what the edit would do besides changing the words, or why it can't be made ([Editing text](#editing-text)); Apply (or Apply anyway) or Cancel | `pdf.lines`, `pdf.edit_check`, `pdf.edit_text` |
 
 Undo and Redo use the engine's history; Save writes the PDF back
 (`pdf.undo`, `pdf.redo`, `pdf.save`, `pdf.state`). Closing a tab with unsaved
@@ -77,6 +77,51 @@ PDF ("This PDF is protected with a password": OctoSense keeps passwords on
 host sheets and there is none for PDFs yet, so it is not opened), storage
 full ("Remove a PDF to make room"), eight PDFs already open, unsaved changes
 when closing, and no engine on the device.
+
+## Editing text
+
+Edit redraws a paragraph in place with the engine's own editor. Real-world
+PDFs limit what that can do, and the right panel says so before Apply. As
+you click a paragraph, and again when your typing pauses, the app asks the
+engine what the edit would do (`pdf.edit_check`, which makes the edit on a
+copy of the document and drops it), so no edit garbles a page unannounced:
+
+- **Another font.** A PDF usually embeds only the glyphs it uses (a subset
+  font), and a web browser often prints text in unnamed Type 3 fonts. When
+  the paragraph's own font can't show the new text, the engine sets the
+  paragraph in Helvetica, Times or Courier instead, which looks different and
+  takes another width. The panel names the font it will use.
+- **More room.** An edited one-line paragraph grows to the right up to the
+  page's margin, and a longer one grows down; nothing around it moves. When
+  the new text would run into other lines of text, or fall off the page, the
+  panel says so.
+- **Chinese, Japanese and Korean.** The engine draws characters a
+  paragraph's font lacks from a fallback face this build doesn't include, so
+  it refuses them, and the panel says so plainly: "PDF Tools can't edit
+  Chinese, Japanese or Korean text yet." Characters the font already has
+  (the same ones in another order, say) still work. Other text no standard
+  font shows, such as Cyrillic or Greek, is refused the same way, naming the
+  characters.
+- **A line in pieces.** A browser prints a title whose glyphs span several
+  fonts as one piece per font, and the engine reads each piece as a
+  paragraph of its own, so a click selects only that piece. The panel says
+  how many pieces the line has.
+
+While the panel has a warning, Apply reads "Apply anyway"; an edit that
+hasn't been checked as it stands yet is checked first, and is made at once
+only if there is nothing to say. A refusal shows in red and Apply only
+repeats it. With notes showing, the card takes the panel's height: its
+fields scroll, and Apply and Cancel stay at its foot, in view even in the
+desktop's default window. A document whose security settings forbid changes, or that opens
+for reading only, is refused the same way.
+
+The pdf service's `pdftools_fixture` example writes a page as a web browser
+prints it, with all four (a title in five pieces in unnamed Type 3 fonts,
+Chinese text in an embedded subset font), to try Edit on:
+
+```sh
+cargo run --locked -p octosense-pdf-service --example pdftools_fixture -- --edit-sample <file>
+```
 
 ## Opening a PDF from this device
 
@@ -150,7 +195,13 @@ evaluating the bundle's functions in a script VM
 part's title, what the library index keeps across a restart, the pages a
 range names, a find snippet's match in bold, an avatar's initials, a
 comment's date, the storage line's words, a paragraph's alignment read from
-its lines, and what an edit sends.
+its lines, what an edit sends, and what the Edit panel says an edit would do
+(a font's name, the warnings and "Apply anyway", a line in pieces). They
+also parse the whole script, views and handlers included, which the VM there
+doesn't run: one parse error fails the whole app when it loads. The
+pdf service's own tests hold `pdf.edit_check`'s answers to what the engine
+then does, on the `--edit-sample` page (`cargo test --locked -p
+octosense-pdf-service`).
 
 ```sh
 cargo test --locked -p octosense-shell --lib pdftools_model
@@ -233,6 +284,15 @@ that refusal.
   `--budget-ms 1000`: at 64 ms, under load averages of 54 to 74, the `shell`
   run passed every step but overran the budget after UI-thread stalls in the
   pdf service's file renames.
+- **Verified on 11 Oct 2026, Edit on real-world PDFs** (the Linux build host:
+  a private headless weston and Makepad's Wayland backend, not macOS, where
+  another session was running OctoSense;
+  [tests/evidence/edit-20261011](tests/evidence/edit-20261011/README.md)):
+  the model tests; the pdf service's tests; in a desktop shell with the real
+  engine at the runtime's 64 ms budget, light and dark, on the
+  `--edit-sample` page: the five-pieces note, the font and room warnings with
+  Apply anyway, the plain refusal of Chinese text, an edit made anyway and
+  one made at once. Edit on macOS since this change is **unverified**.
 - **Not verified**: the host's file dialog and a real import (a hidden window
   cannot open it); with the real engine, form fields, outlines, Redo, the
   other comment and page operations, password-protected PDFs, the eight-PDF

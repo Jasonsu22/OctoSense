@@ -11803,6 +11803,7 @@ dependencies = [
  "pdfcraft-annot",
  "pdfcraft-automation",
  "pdfcraft-cos",
+ "pdfcraft-edit",
  "pdfcraft-xfa",
  "serde_json",
  "tempfile",
