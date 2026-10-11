@@ -257,6 +257,30 @@ fn a_damaged_pdf_is_damaged_and_a_missing_one_not_found() {
     assert_eq!(docs::open_count(), 0);
 }
 
+/// A page label asking for page 2^63 - 1 in letters: the engine allocated a label of
+/// 354,745,078,340,568,301 bytes, and the failed allocation aborted the process (the shell with
+/// it), which no panic guard can catch. The file opens through `pdf.info` and `pdf.open`, its page
+/// keeps its physical number, and the engine says why.
+#[test]
+fn a_hostile_page_label_cannot_kill_the_process() {
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R /PageLabels << /Nums [0 << /S /a /St 9223372036854775807 >>] >> >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>".to_string(),
+    ];
+    let w = World::new();
+    w.put("labels.pdf", &assemble(&objs));
+    let info = w.ok("info", json!({"path": "labels.pdf"}));
+    assert_eq!((info["document"]["pages"].clone(), info["pages"][0]["label"].clone()), (json!(1), json!("1")), "{info}");
+    let warned = info["warnings"].as_array().is_some_and(|all| all.iter().any(|one| one.as_str().is_some_and(|s| s.starts_with("Page labels"))));
+    assert!(warned, "the engine says why: {info}");
+    let open = w.ok("open", json!({"path": "labels.pdf"}));
+    assert_eq!(open["pages"], json!(1), "{open}");
+    let doc = open["doc"].as_str().unwrap().to_string();
+    assert_eq!(w.ok("info", json!({"doc": doc}))["pages"][0]["label"], json!("1"));
+    assert_eq!(w.ok("close", json!({"doc": doc})), json!({"closed": true}));
+}
+
 #[test]
 fn a_protected_pdf_is_refused_as_protected() {
     let w = World::new().samples();
