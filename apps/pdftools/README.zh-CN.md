@@ -225,6 +225,12 @@ python3 apps/pdftools/dev-fixture/make_fixture.py <card-host app data>/os.pdftoo
   运行时 64 ms 的预算通过。10 月 11 日它们使用 `--budget-ms 1000`：在 64 ms 下、54 到 74 的
   平均负载中，`shell` 运行通过了每个步骤，但在 pdf 服务的文件重命名造成 UI 线程停顿之后超出了
   预算。
+- **已于 2026 年 10 月 11 日验证真实世界 PDF 上的 Edit**（在 Linux 构建主机上，使用私有的无头
+  weston 和 Makepad 的 Wayland 后端，而不是 macOS：当时另一个会话正在 Mac 上运行 OctoSense；
+  [tests/evidence/edit-20261011](tests/evidence/edit-20261011/README.zh-CN.md)）：模型测试；
+  pdf 服务的测试；在桌面 Shell 中使用真实引擎、按运行时 64 ms 的预算，在 `--edit-sample`
+  页面上进行的浅色和深色运行：五块的说明、字体和空间的警告以及 Apply anyway、对中文文字的
+  直白拒绝、一次仍然进行的编辑和一次立即生效的编辑。本次改动后 macOS 上的 Edit **未验证**。
 - **未验证**：宿主的文件对话框和真实的导入（隐藏窗口无法打开它）；使用真实引擎时的表单
   字段、大纲、Redo、其他评论和页面操作、受密码保护的 PDF、八个 PDF 的上限以及未保存更改
   的询问（开发夹具覆盖了它们的界面）；其他屏幕尺寸；Linux、Windows、手机。

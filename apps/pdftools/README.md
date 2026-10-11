@@ -284,6 +284,15 @@ that refusal.
   `--budget-ms 1000`: at 64 ms, under load averages of 54 to 74, the `shell`
   run passed every step but overran the budget after UI-thread stalls in the
   pdf service's file renames.
+- **Verified on 11 Oct 2026, Edit on real-world PDFs** (the Linux build host:
+  a private headless weston and Makepad's Wayland backend, not macOS, where
+  another session was running OctoSense;
+  [tests/evidence/edit-20261011](tests/evidence/edit-20261011/README.md)):
+  the model tests; the pdf service's tests; in a desktop shell with the real
+  engine at the runtime's 64 ms budget, light and dark, on the
+  `--edit-sample` page: the five-pieces note, the font and room warnings with
+  Apply anyway, the plain refusal of Chinese text, an edit made anyway and
+  one made at once. Edit on macOS since this change is **unverified**.
 - **Not verified**: the host's file dialog and a real import (a hidden window
   cannot open it); with the real engine, form fields, outlines, Redo, the
   other comment and page operations, password-protected PDFs, the eight-PDF
