@@ -414,6 +414,7 @@ fn opened(doc: &mut OpenDoc, cx: &Ctx, m: &'static str, path: &str) -> Result<Js
         .first()
         .map(|m| m.layouts.iter().map(|l| json!({ "id": l.id.0, "name": l.name, "kind": l.kind.xml() })).collect())
         .unwrap_or_default();
+    let design = design_state(&deck);
     let mut out = doc.common(&[])?;
     for (k, v) in [
         ("doc", json!(doc.handle)),
@@ -422,6 +423,9 @@ fn opened(doc: &mut OpenDoc, cx: &Ctx, m: &'static str, path: &str) -> Result<Js
         ("size", inspected["slideSize"].clone()),
         ("slides", json!(deck.slides.len())),
         ("theme", inspected["theme"].clone()),
+        ("color_scheme", design["color_scheme"].clone()),
+        ("font_scheme", design["font_scheme"].clone()),
+        ("footer", design["footer"].clone()),
         ("layouts", json!(layouts)),
         ("sections", sections(&deck)),
         ("missing_fonts", json!(missing_fonts(&deck))),
@@ -631,6 +635,32 @@ pub(crate) fn state(a: &Json, cx: &Ctx) -> Result<Json, String> {
         out["undo"] = inspected["undo"].clone();
         out["redo"] = inspected["redo"].clone();
         out["slides"] = json!(inspected["slides"].as_array().map_or(0, Vec::len));
+        let deck = doc.deck()?;
+        let design = design_state(&deck);
+        out["theme"] = json!(deck.masters.first().map(|m| m.theme.name.clone()));
+        for key in ["color_scheme", "font_scheme", "footer"] {
+            out[key] = design[key].clone();
+        }
         Ok(out)
+    })
+}
+
+/// The deck's design as the inspector shows it, read from the model: the
+/// first master's colour and font scheme names (the master
+/// `document.inspect` reports the theme of), and the deck's header and
+/// footer settings in the keys `deck.design {footer}` takes.
+pub(crate) fn design_state(deck: &Presentation) -> Json {
+    let master = deck.masters.first();
+    let hf = &deck.header_footer;
+    json!({
+        "color_scheme": master.map(|m| m.theme.colors.name.clone()),
+        "font_scheme": master.map(|m| m.theme.fonts.name.clone()),
+        "footer": {
+            "slide_numbers": hf.slide_number,
+            "footer": hf.footer,
+            "footer_text": hf.footer_text,
+            "date": hf.date,
+            "hide_on_title": hf.hide_on_title,
+        },
     })
 }

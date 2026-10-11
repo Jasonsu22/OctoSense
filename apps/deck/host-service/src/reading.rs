@@ -12,7 +12,12 @@
 //! deckcraft-render's `render_slide` and `render_layout` (each one bounded
 //! raster, written only into the service's own cache, [`cache::store`]),
 //! deckcraft-anim's `show_order`, `ShowState::steps` and `Timeline::state`,
-//! `slides_to_outline`, and the font database's `families`.
+//! `slides_to_outline`, and the font database's `families`. Besides the
+//! commands' answers, the service reads what the inspector shows straight
+//! from the open document's model, read-only (`deckcraft_model`): a box's
+//! anchor and autofit (`resolve::body`, with what it inherits), a chart's
+//! legend, data labels, gridlines and palette, a table's style options, and
+//! the engine's built-in colour schemes with their colours.
 
 use deckcraft_anim::{ShowState, Timeline};
 use deckcraft_engine::geom::{Point, Vec2};
@@ -20,7 +25,7 @@ use deckcraft_engine::render::{self as render, ParaState, RenderOpts, ShapeState
 use deckcraft_engine::tools::Hit;
 use deckcraft_model::resolve::{self, Ctx};
 use deckcraft_model::style::Dash;
-use deckcraft_model::text::{Align, Spacing};
+use deckcraft_model::text::{Align, Anchor, AutoFit, Spacing};
 use deckcraft_model::{Fill, Presentation, Shape, ShapeId, ShapeKind, Slide};
 use serde_json::{json, Value as Json};
 
@@ -200,6 +205,27 @@ fn shape_json(ctx: Option<&Ctx>, summary: &Json, sh: &Shape) -> Json {
     }
     if sh.locked {
         out["locked"] = json!(true);
+    }
+    // What `slide.inspect` leaves out of a chart and a table, from the model,
+    // in the keys `deck.chart` and `deck.table {op: "options"}` take.
+    match &sh.kind {
+        ShapeKind::Chart(c) if out["chart"].is_object() => {
+            out["chart"]["legend"] = json!(c.legend.as_deref().unwrap_or("none"));
+            out["chart"]["data_labels"] = json!(c.data_labels);
+            out["chart"]["gridlines"] = json!(c.gridlines);
+            out["chart"]["palette"] = json!(c.palette);
+        }
+        ShapeKind::Table(t) if out["table"].is_object() => {
+            out["table"]["options"] = json!({
+                "header_row": t.first_row,
+                "total_row": t.last_row,
+                "banded_rows": t.band_row,
+                "first_column": t.first_col,
+                "last_column": t.last_col,
+                "banded_columns": t.band_col,
+            });
+        }
+        _ => {}
     }
     if let ShapeKind::Picture { fill } = &sh.kind {
         out["picture"] = json!({
@@ -408,7 +434,40 @@ pub(crate) fn themes(a: &Json, cx: &Call) -> Result<Json, String> {
             json!({ "name": name, "label": if name == "DeckCraft" { "Default" } else { name }, "colors": t["colors"], "major": t["major"], "minor": t["minor"] })
         })
         .collect();
-    Ok(json!({ "themes": themes, "color_schemes": got["colorSchemes"], "font_schemes": got["fontSchemes"] }))
+    Ok(json!({ "themes": themes, "color_schemes": color_schemes(), "font_schemes": got["fontSchemes"] }))
+}
+
+/// The engine's built-in colour schemes, each with its twelve colours in the
+/// engine's order (dk1, lt1, dk2, lt2, accent1 to accent6, hlink, folHlink),
+/// as `design.themes` gives a theme's: the list `design.colors {name}`
+/// chooses from (`deckcraft_model::theme::builtin_color_schemes`, which
+/// `design.themes` names only).
+fn color_schemes() -> Json {
+    json!(deckcraft_model::theme::builtin_color_schemes()
+        .iter()
+        .map(|c| json!({ "name": c.name, "colors": c.colors.iter().map(|x| format!("#{}", x.hex())).collect::<Vec<_>>() }))
+        .collect::<Vec<_>>())
+}
+
+/// A box's vertical anchor as `deck.format` names it (`top`, `middle`,
+/// `bottom`), or as the model names the two it doesn't set.
+fn anchor_name(a: Anchor) -> &'static str {
+    match a {
+        Anchor::Top => "top",
+        Anchor::Middle => "middle",
+        Anchor::Bottom => "bottom",
+        Anchor::Justified => "justified",
+        Anchor::Distributed => "distributed",
+    }
+}
+
+/// A box's autofit as `deck.format` names it.
+fn autofit_name(a: &AutoFit) -> &'static str {
+    match a {
+        AutoFit::None => "none",
+        AutoFit::Shrink { .. } => "shrink",
+        AutoFit::Shape => "resize",
+    }
 }
 
 /// `deck.fonts {}`: what the engine can draw on this device.
@@ -487,6 +546,12 @@ pub(crate) fn format_state(a: &Json, cx: &Call) -> Result<Json, String> {
         }
         let got = gate::read(doc, cx.area, Plan { method: M, most: FORMAT_STATE, cmds })?;
         let state = &got[got.len() - if paragraph.is_some() { 2 } else { 1 }];
+        // The box's anchor and autofit, as it draws them: its own, else what
+        // its layout and master placeholders give, else the engine's
+        // defaults (`resolve::body`).
+        let body = Ctx::for_slide(&deck, &deck.slides[i]).map(|ctx| resolve::body(&ctx, &sh));
+        let anchor = body.as_ref().and_then(|b| b.anchor).map(anchor_name);
+        let autofit = body.as_ref().and_then(|b| b.autofit.as_ref()).map(autofit_name);
         // The colour of the same run format.state reads, resolved.
         let color = Ctx::for_slide(&deck, &deck.slides[i]).map(|ctx| {
             let body = sh.text.clone().unwrap_or_default();
@@ -515,6 +580,8 @@ pub(crate) fn format_state(a: &Json, cx: &Call) -> Result<Json, String> {
                 Some(Spacing::Pts(pt)) => json!({ "pt": pt }),
                 None => Json::Null,
             },
+            "anchor": anchor,
+            "autofit": autofit,
         }))
     })
 }

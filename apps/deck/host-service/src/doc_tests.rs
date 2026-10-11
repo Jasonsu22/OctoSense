@@ -283,7 +283,12 @@ fn creating_a_deck_writes_it_as_made() {
 fn state_close_and_unsaved_changes() {
     let w = World::new();
     let doc = w.sample_open("board.deckcraft", 3);
-    assert_eq!(w.ok("state", json!({ "doc": doc })), json!({ "rev": 0, "edited": false, "can_undo": false, "can_redo": false, "undo": null, "redo": null, "slides": 3 }));
+    let footer = json!({ "slide_numbers": false, "footer": false, "footer_text": "", "date": false, "hide_on_title": false });
+    assert_eq!(
+        w.ok("state", json!({ "doc": doc })),
+        json!({ "rev": 0, "edited": false, "can_undo": false, "can_redo": false, "undo": null, "redo": null, "slides": 3,
+                "theme": "DeckCraft", "color_scheme": "DeckCraft", "font_scheme": "DeckCraft", "footer": footer })
+    );
     let ids = w.slide_ids(&doc);
     w.ok("notes", json!({ "doc": doc, "slide": ids[0], "text": "Welcome everyone" }));
     let state = w.ok("state", json!({ "doc": doc }));
@@ -575,9 +580,21 @@ fn the_import_guard_refuses_before_the_engine_runs_on_every_path() {
 #[test]
 fn the_guards_reader_reads_as_open_presentation() {
     let deck = sample(5);
+    // A package whose slide is wider than the engine keeps: the package
+    // reader takes up to 20,000 points, and `repair` narrows it to 4,000,
+    // so a reader that skipped `repair` would read another deck.
+    let wide = fx::with_rewritten(&pptx(&deck), "ppt/presentation.xml", |xml| {
+        let xml = String::from_utf8_lossy(xml);
+        assert!(xml.contains("cx=\"12192000\""), "the 960-point slide width is there to widen");
+        xml.replacen("cx=\"12192000\"", "cx=\"63500000\"", 1).into_bytes()
+    });
+    let raw = deckcraft_pptx::import(&wide).unwrap();
+    assert_eq!(raw.slide_size.width, 5000.0, "the package reader keeps the width");
+    assert_eq!(engine_file::open_presentation("wide.pptx", &wide).unwrap().slide_size.width, 4000.0, "repair narrows it");
     for (name, bytes, format) in [
         ("x.deckcraft", native(&deck), guard::Format::Native),
         ("x.pptx", pptx(&deck), guard::Format::Pptx),
+        ("wide.pptx", wide, guard::Format::Pptx),
         ("x.txt", b"Title\n\tPoint\nSecond\n\tAnother point\n".to_vec(), guard::Format::Outline),
         ("x.md", b"".to_vec(), guard::Format::Outline),
     ] {
@@ -624,6 +641,103 @@ fn a_package_with_its_content_types_late_opens_on_every_path() {
         coded(&w.err("info", json!({ "path": name })), code);
         assert_eq!(engine_reads(), before, "{name}: the engine read nothing");
     }
+}
+
+/// An Office package whose main part is not a presentation (a document or
+/// a workbook, written by Office or laid out as LibreOffice writes one,
+/// its content types last) is `unsupported:`, not `damaged:`.
+#[test]
+fn an_office_document_that_is_not_a_presentation_is_unsupported() {
+    let w = World::new();
+    let rels = |target: &str| format!("<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"{target}\"/></Relationships>");
+    let types = |main: &str, ct: &str| Part::deflated("[Content_Types].xml", format!("<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/{main}\" ContentType=\"{ct}\"/></Types>").as_bytes());
+    let word = "<?xml version=\"1.0\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>Minutes</w:t></w:r></w:p></w:body></w:document>";
+    let docx_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
+    let book = "<?xml version=\"1.0\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheets/></workbook>";
+    let xlsx_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml";
+    // As Office writes them: the content types first.
+    let office_docx = fx::zip(&[types("word/document.xml", docx_type), Part::deflated("_rels/.rels", rels("word/document.xml").as_bytes()), Part::deflated("word/document.xml", word.as_bytes())]);
+    let office_xlsx = fx::zip(&[types("xl/workbook.xml", xlsx_type), Part::deflated("_rels/.rels", rels("xl/workbook.xml").as_bytes()), Part::deflated("xl/workbook.xml", book.as_bytes())]);
+    // As LibreOffice lays one out: its content types last, past 4 KiB.
+    let styles = format!("<?xml version=\"1.0\"?><w:styles xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">{}</w:styles>", "<w:style w:type=\"paragraph\" w:styleId=\"x\"/>".repeat(200));
+    let libre_docx = fx::zip(&[
+        Part::deflated("_rels/.rels", rels("word/document.xml").as_bytes()),
+        Part::stored("word/styles.xml", styles.as_bytes()),
+        Part::deflated("word/document.xml", word.as_bytes()),
+        types("word/document.xml", docx_type),
+    ]);
+    assert!(libre_docx.windows(19).position(|win| win == b"[Content_Types].xml").unwrap() > 4096);
+    for (name, bytes) in [("minutes.docx", office_docx), ("budget.xlsx", office_xlsx), ("minutes-lo.docx", libre_docx)] {
+        w.put(name, &bytes);
+        for method in ["open", "cover"] {
+            let e = w.err(method, json!({ "path": name }));
+            coded(&e, "unsupported");
+            assert!(e.contains("not a presentation"), "{name} {method}: {e}");
+        }
+    }
+    assert_eq!(docs::open_count(), 0);
+}
+
+/// What the inspector shows, read from the open document's model: the
+/// deck's colour and font schemes and its footer (on opening and in its
+/// state, so an undo shows too), a box's anchor and autofit, a chart's
+/// options and a table's, and the engine's colour schemes with their
+/// colours.
+#[test]
+fn the_inspector_reads_the_decks_design_and_its_objects() {
+    let w = World::new();
+    let doc = w.sample_open("board.deckcraft", 5);
+    let ids = w.slide_ids(&doc);
+    // The design: the default theme's own schemes, no footer.
+    let opened = w.ok("state", json!({ "doc": doc }));
+    assert_eq!((opened["theme"].clone(), opened["color_scheme"].clone(), opened["font_scheme"].clone()), (json!("DeckCraft"), json!("DeckCraft"), json!("DeckCraft")), "{opened}");
+    let none = json!({ "slide_numbers": false, "footer": false, "footer_text": "", "date": false, "hide_on_title": false });
+    assert_eq!(opened["footer"], none);
+    let footer = json!({ "slide_numbers": true, "footer": true, "footer_text": "Board", "date": true, "hide_on_title": true });
+    w.ok("design", json!({ "doc": doc, "colors": "Ocean", "fonts": "Classic", "footer": footer }));
+    let state = w.ok("state", json!({ "doc": doc }));
+    assert_eq!((state["color_scheme"].clone(), state["font_scheme"].clone(), state["footer"].clone()), (json!("Ocean"), json!("Classic"), footer.clone()), "{state}");
+    w.ok("save", json!({ "doc": doc }));
+    w.ok("close", json!({ "doc": doc }));
+    let again = w.open("board.deckcraft");
+    let reopened = w.ok("open", json!({ "path": "board.deckcraft" }));
+    assert_eq!((reopened["color_scheme"].clone(), reopened["font_scheme"].clone(), reopened["footer"].clone()), (json!("Ocean"), json!("Classic"), footer), "{reopened}");
+    w.ok("close", json!({ "doc": reopened["doc"] }));
+    w.ok("design", json!({ "doc": again, "colors": "Berry" }));
+    w.ok("undo", json!({ "doc": again }));
+    assert_eq!(w.ok("state", json!({ "doc": again }))["color_scheme"], "Ocean", "an undo shows");
+    // The engine's colour schemes, each with its twelve colours.
+    let themes = w.ok("themes", json!({}));
+    let ocean = themes["color_schemes"].as_array().unwrap().iter().find(|c| c["name"] == "Ocean").cloned().unwrap();
+    let colors = ocean["colors"].as_array().unwrap();
+    assert_eq!(colors.len(), 12);
+    assert_eq!((colors[2].clone(), colors[4].clone()), (json!("#13293D"), json!("#006494")), "dk2 and accent1, in the engine's order");
+    assert_eq!(themes["color_schemes"].as_array().unwrap().len(), deckcraft_model::theme::builtin_color_schemes().len());
+    // A box's anchor and autofit as it draws them: a body placeholder
+    // shrinks its text as its master says, a text box resizes to its text;
+    // then as set.
+    let body = w.shape_where(&again, ids[1], "text", "First point\nSecond point");
+    let state = w.ok("format_state", json!({ "doc": again, "slide": ids[1], "id": body }));
+    assert_eq!((state["anchor"].clone(), state["autofit"].clone()), (json!("top"), json!("shrink")), "{state}");
+    let tb = w.ok("insert", json!({ "doc": again, "slide": ids[1], "kind": "text", "text": "Note" }))["id"].clone();
+    assert_eq!(w.ok("format_state", json!({ "doc": again, "slide": ids[1], "id": tb }))["autofit"], "resize");
+    w.ok("format", json!({ "doc": again, "slide": ids[1], "ids": [body], "anchor": "bottom", "autofit": "none" }));
+    let state = w.ok("format_state", json!({ "doc": again, "slide": ids[1], "id": body }));
+    assert_eq!((state["anchor"].clone(), state["autofit"].clone()), (json!("bottom"), json!("none")), "{state}");
+    // A chart's options and a table's, as deck.chart and deck.table take them.
+    let shapes = |slide: u64| w.ok("slide", json!({ "doc": again, "slide": slide }))["shapes"].as_array().unwrap().clone();
+    let chart = shapes(ids[3]).into_iter().find(|s| s["chart"].is_object()).unwrap();
+    let c = &chart["chart"];
+    assert_eq!((c["legend"].clone(), c["data_labels"].clone(), c["gridlines"].clone(), c["palette"].clone()), (json!("b"), json!(false), json!(true), json!("colorful1")), "{c}");
+    w.ok("chart", json!({ "doc": again, "slide": ids[3], "id": chart["id"], "legend": "none", "data_labels": true, "gridlines": false, "palette": "monochrome3" }));
+    let c = shapes(ids[3]).into_iter().find(|s| s["chart"].is_object()).unwrap()["chart"].clone();
+    assert_eq!((c["legend"].clone(), c["data_labels"].clone(), c["gridlines"].clone(), c["palette"].clone()), (json!("none"), json!(true), json!(false), json!("monochrome3")), "{c}");
+    let table = shapes(ids[2]).into_iter().find(|s| s["table"].is_object()).unwrap();
+    let defaults = json!({ "header_row": true, "total_row": false, "banded_rows": true, "first_column": false, "last_column": false, "banded_columns": false });
+    assert_eq!(table["table"]["options"], defaults, "{table}");
+    w.ok("table", json!({ "doc": again, "slide": ids[2], "id": table["id"], "op": "options", "header_row": false, "banded_columns": true }));
+    let options = shapes(ids[2]).into_iter().find(|s| s["table"].is_object()).unwrap()["table"]["options"].clone();
+    assert_eq!((options["header_row"].clone(), options["banded_columns"].clone(), options["banded_rows"].clone()), (json!(false), json!(true), json!(true)), "{options}");
 }
 
 /// The import guard passes what the engine itself writes, at the sizes the
@@ -847,7 +961,7 @@ fn layouts_themes_fonts_and_shapes() {
     let names: Vec<&str> = themes["themes"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["DeckCraft", "Harbor", "Ember", "Meadow", "Nocturne", "Paper", "Coral Reef", "Slate"]);
     assert_eq!(themes["themes"][0]["label"], "Default");
-    assert!(themes["color_schemes"].as_array().unwrap().iter().any(|c| c == "Ocean"), "{themes}");
+    assert!(themes["color_schemes"].as_array().unwrap().iter().any(|c| c["name"] == "Ocean" && c["colors"].as_array().is_some_and(|k| k.len() == 12)), "{themes}");
     assert!(themes["font_schemes"].as_array().unwrap().iter().any(|f| f["name"] == "Office Compatible"), "{themes}");
     let fonts = w.ok("fonts", json!({}));
     assert!(fonts["families"].as_array().is_some_and(|f| !f.is_empty()), "at least the last-resort face: {fonts}");
