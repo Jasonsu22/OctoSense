@@ -77,12 +77,13 @@ two kinds apart by the file's preamble, and a bundle may carry both.
 - **State.** Each component's instance lives on in the app's worker between
   calls, so it can keep a parsed document or a cache. A trap or the deadline
   spends it and the next call gets a new one; an update, a changed grant, a
-  withdrawal or the worker's exit (a minute without calls) ends it.
+  withdrawal, the last owning app isolate closing, or the worker's exit
+  (a minute without calls) ends it.
 - **What it reaches.** Clocks and random numbers. Its stdout and stderr become
   the app's log lines, and it gets no environment, arguments or stdin. A
   component that imports anything beyond `wasi:cli`, `wasi:clocks`,
-  `wasi:filesystem`, `wasi:http`, `wasi:io`, `wasi:random` and
-  `octosense:host`, such as sockets, is refused when it loads.
+  `wasi:filesystem`, `wasi:http`, `wasi:io`, `wasi:random`, `wasi:sockets`
+  and `octosense:host` is refused when it loads.
 - **Files.** The app's available storage folder, the one its script's `fs.*`
   sees, is the component's `/`. Account-scoped apps need their active account.
   Nothing else on the device is visible. Missing storage or a signed-out
@@ -93,14 +94,24 @@ two kinds apart by the file's preamble, and a bundle may carry both.
   reports any failed stream write as one. The request's error then ends with
   "a write was refused: the storage budget is used up". Rewriting, truncating
   and deleting give bytes back, so a component can free space.
-- **The network.** Its `wasi:http` requests reach any host, as the device
-  can: an app's network declarations (`net`, `network.hosts`) are shown when
+- **The network.** Its `wasi:http` requests and `wasi:sockets` TCP, UDP and
+  DNS operations reach the network as the device can: an app's network declarations (`net`, `network.hosts`) are shown when
   it is installed and not enforced while it runs. The ruling of 8 October
   2026 removed the per-app runtime gates; the OS and the host's API surface
   are the boundary. The pinned Splash runtime also no longer enforces the
   manifest host list. A component that
-  imports `wasi:http` gets 10 s a call instead of 2 s, and each request's
-  connect, first-byte and between-bytes timeouts end with the call.
+  imports `wasi:http` or `wasi:sockets` gets 10 s a call instead of 2 s.
+  HTTP timeouts and blocking socket/stream/poll waits end with the call;
+  cancellation is observed at most every 10 ms while waiting in the host.
+  TCP bind/listen/accept and UDP bind/send/receive are supported. Privileged
+  raw IP sockets (`SOCK_RAW`) are not part of this API. An app shares a
+  32-handle budget for live TCP/UDP sockets and DNS lookup streams across
+  its components. Each component has at most 512 host resources, including
+  streams and pollables. Closing a handle refunds its slot; a trap or
+  cancellation immediately drops the instance's resources. A cancelled DNS
+  waiter stops promptly. An OS resolver operation already running may finish
+  in the background; it retains its budget slot until then. At most eight
+  native resolvers run across the process, with no waiting queue.
 - **Host services.** Through `octosense:host`
   ([`crates/wasm-host/wit/octosense-host.wit`](../crates/wasm-host/wit/octosense-host.wit)),
   `request(service, args)` uses the admitted app's identity, dispatched on
@@ -109,6 +120,18 @@ two kinds apart by the file's preamble, and a bundle may carry both.
   never gains a sheet, prompt or trusted user input, so only methods a
   background surface may call are available. `wasm.*` is refused, since the app's worker is busy with
   the call, and the call's deadline bounds the wait.
+
+**Socket compatibility:** this support is unreleased; desktop RC5 rejects socket
+imports. Socket bundles must keep `host-api-v1` and `wasm-components-v1` in
+`requires` and declare `host_api.required: {"wasm.sockets": 1}`. The SDK adds
+this automatically when it detects socket imports, and App Hub verifies it
+for bundled and shared components. `wasm.sockets` is a runtime compatibility
+marker, not a callable JSON method or permission. Older hosts can still read
+the catalog and report this individual app as incompatible. Rust crates must
+still build for `wasm32-wasip2`; native TLS backends, process creation and
+threads do not become portable just because sockets work. Rust's WASI UDP
+`set_read_timeout` is unsupported; use nonblocking receive with a deadline,
+or rely on the host call deadline.
 
 ADR 0014 records what this costs. On an M-series Mac, the 313 KiB test
 component compiles in about 40 ms and loads from the cache in about 4 ms;
@@ -204,10 +227,13 @@ be interrupted, but an expired or cancelled request never goes on to run.
 
 | Limit | Value |
 | --- | --- |
-| One call, start function included | 2 s of wall-clock time (checked every 10 ms) |
+| One call, start function included | 2 s; 10 s with HTTP/socket imports (checked every 10 ms) |
 | Linear memory | 256 MiB |
 | Table elements | 16,384 |
 | Wasm stack | 512 KiB |
+| Live sockets and DNS lookup streams | 32 per app, shared across components |
+| Host resource table | 512 entries per component |
+| Native DNS work | 8 resolvers per process; slots retained until native completion |
 | Module | 8 MiB |
 | Input or output of one call | 16 MiB in the runtime; 8 MiB of serialized input in the service |
 | Log | 64 lines a call, 1 KiB each |
@@ -313,7 +339,11 @@ cd phone && cargo test --locked --features mobile-apps -p octosense-shell wasm_s
   memory cap; `fetch`, whose `wasi:http` reaches a local server without a
   manifest host allowlist, and whose request to a server that never answers ends at the
   deadline; `hostcall`, which calls host services through the embedder; and
-  a component that imports sockets refused.
+  a component importing ordinary sockets.
+- `crates/wasm-host/tests/component_sockets.rs` runs real TCP/UDP echo,
+  localhost DNS, listener/accept, shared socket limits, close/refund cycles,
+  blocked-read cancellation and UDP deadlines. Unit tests also cover
+  stalled stream destruction and abandoned native resolver work.
 - The service tests cover the tool mapping, bounded input, a fresh instance
   per call, revocation after an update, a grant change or a withdrawal,
   cancellation and the queue bounds, and the app's own functions answering
@@ -332,7 +362,7 @@ cd phone && cargo test --locked --features mobile-apps -p octosense-shell wasm_s
 The test components rebuild byte for byte: with rustc 1.97.1,
 `crates/wasm-host/tests/component-guest/build.sh` writes the same
 `notes.component.wasm` (SHA-256 `963c965b…`), `netprobe.component.wasm`
-(`98b2402a…`), `fetch.component.wasm` (`6eaf6ac8…`) and
+(`faf1cb5d…`), `fetch.component.wasm` (`6eaf6ac8…`) and
 `hostcall.component.wasm` (`d39f2a8e…`). It needs the target once:
 `rustup target add wasm32-wasip2`.
 

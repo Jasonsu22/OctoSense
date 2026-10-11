@@ -130,9 +130,18 @@ component reaches only what its app may already reach.
      families the manifest declares. Each service retains its actual
      app/account, consent, review and resource checks. Calls gain no sheet or
      prompt (only methods a background surface may call), and never `wasm.*`.
-   - **Never:** `wasi:sockets`, and any import outside these packages. A
-     component that asks for one is refused when it loads
-     (`LoadError::Import`) and by App Hub's gate.
+   - **Ordinary sockets (unreleased follow-up):** `wasi:sockets` provides TCP,
+     UDP and DNS. It requires `host_api.required: {"wasm.sockets": 1}` and
+     `host-api-v1`, so older hosts remain able to read the catalog but cannot
+     install this app. No new permission gate or network allowlist is added.
+     The app shares 32 live socket/DNS handles across its components; each
+     component has 512 host resource slots. Blocking waits observe deadlines
+     and cancellation. Closing the last owning app isolate releases the worker
+     and its sockets. See the [Wasm guide](../wasm.md) for limits and release
+     status. RC5 still refuses sockets.
+   - **Never:** imports outside the listed packages, including native system
+     calls and privileged raw IP sockets. The loader and App Hub gate refuse
+     unsupported imports.
 5. **No WIT to write.**
    - **Guest SDK, phase 2:** a guest crate, `octosense-component`, with an
      `#[octosense_component::export]` attribute that derives the WIT world from
@@ -161,7 +170,7 @@ component reaches only what its app may already reach.
 
 | Phase | Scope |
 | --- | --- |
-| 1. Runtime spike (done here) | `crates/wasm-host::component`: load, check imports, list exports with WIT signatures, long-lived instances, JSON calls, the WASI subset above with the storage preopen, the deadline, the memory cap and logs. Tests run an unmodified crate (`pulldown-cmark`) built with plain cargo, and refuse a component that imports `wasi:sockets`. |
+| 1. Runtime spike (done here) | `crates/wasm-host::component`: load, check imports, list exports with WIT signatures, long-lived instances, JSON calls, the WASI subset above with the storage preopen, the deadline, the memory cap and logs. Tests run an unmodified crate (`pulldown-cmark`) built with plain cargo, and, in the original spike, refuse `wasi:sockets` (superseded by the follow-up above). |
 | 2. Usable by developers | The shell's `wasm` service: loading components from `fns/`, `wasm.<function>` calls, per-app instances, the app's available storage area, and storage quota accounting for component writes. A larger input limit for components. The guest SDK and its macro; `octo wasm new/build/doctor`; App Hub's gate check and contract version; docs and an example app. |
 | 3. Reach and platforms | `wasi:http` outgoing to any host (declared with `net`, not enforced); an `octosense:host` import for host services under the same checks as `host.request`; compiling at install time, so a phone skips the first compile; Pulley (Wasmtime's interpreter) on OpenHarmony until its JIT policy is known; Windows runtime tests in CI. iOS remains outside the current plan. |
 | 4. Shared components | Reviewed, versioned components in App Hub's catalog that apps depend on, like npm packages. The installer verifies them, and every app still gets its own instance, account and storage boundaries. |
