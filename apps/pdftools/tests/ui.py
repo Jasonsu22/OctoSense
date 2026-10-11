@@ -5,10 +5,12 @@ Shell runs use the shell this checkout builds, with the real pdf engine
 (`cargo build --locked -p octosense --no-default-features --features
 app-hub,craft-engines`). For each run the driver makes a fresh OctoSense home,
 writes sample PDFs into PDF Tools' storage there (octosense-pdf-service's
-`pdftools_fixture` example), starts the shell hidden from a Terminal.app tab
-(never as a child of this process), opens the app with MAKEPAD_WM_TEST_APP and
-walks it over Makepad's remote bridge, saving original /g grabs. Every engine
-call is real.
+`pdftools_fixture` example), starts the shell hidden, opens the app with
+MAKEPAD_WM_TEST_APP and walks it over Makepad's remote bridge, saving original
+/g grabs. Every engine call is real. On macOS the shell starts from a
+Terminal.app tab (never as a child of this process). On Linux, where
+MAKEPAD_HIDE_WINDOWS does nothing, it starts in a session of its own on a
+private headless weston (the pixman renderer, never idle), which stops with it.
 
   shell    every mode on the samples in the shell's own window, light, then
            dark through the shell's own style menu (the dark pass works on
@@ -29,7 +31,8 @@ call is real.
   full     storage with no room left: the engine's refusal, then a removal
   empty    no PDFs: the empty library and "Open a PDF from this device" (a
            hidden window never has focus, so the files service refuses the
-           dialog and the app shows that refusal)
+           dialog and the app shows that refusal; on Linux with no dialog
+           helper there is no files.import, and the app says so)
 
 card-host runs serve no host services:
 
@@ -41,10 +44,12 @@ card-host runs serve no host services:
            design in compare/, and the damaged, protected and unsaved states
 
 Shell runs hold a lock folder, so one hidden shell runs on this machine at a
-time, and refuse to start while another OctoSense runs.
+time, and on macOS refuse to start while another OctoSense runs (on Linux each
+run has a compositor of its own).
 
   python3 apps/pdftools/tests/ui.py --shell target/debug/octosense --lock <dir> --output target/pdftools-ui
   python3 apps/pdftools/tests/ui.py --card-host <App Hub>/target/release/card-host --output target/pdftools-ui
+  (Linux) python3 apps/pdftools/tests/ui.py --shell target/debug/octosense --lock <dir> --work <dir> --grab-scale 1 --output target/pdftools-ui
 """
 import argparse
 import json
@@ -53,6 +58,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -71,6 +77,11 @@ APP = "os.pdftools"
 LIBRARY = "accounts/device/library"
 # The storage PDF Tools gets: App Hub's system ceiling (no storage.max_bytes).
 QUOTA = 64 * 1024 * 1024
+LINUX = sys.platform.startswith("linux")
+# makepad's Linux file dialog runs the desktop's own helper, the first of
+# these on PATH (platform/src/os/linux/file_dialog.rs). With none, the files
+# service offers no files.import, and files.status says import_supported: false.
+DIALOG_HELPERS = ("zenity", "qarma", "matedialog", "kdialog")
 
 
 def fixture(*args):
@@ -297,11 +308,13 @@ class Driver:
 
 
 class Shell(Driver):
-    """The desktop shell, started hidden from a Terminal.app tab."""
+    """The desktop shell, started hidden: from a Terminal.app tab on macOS, on
+    a private headless weston on Linux."""
 
     def __init__(self, binary, home, port, log):
         super().__init__(port)
         self.log = log
+        self.window = self.process = self.weston = None
         env = {
             "OCTOSENSE_HOME": home,
             # Its own kernel folder: a home of OctoSense's own would otherwise
@@ -314,13 +327,10 @@ class Shell(Driver):
         }
         if Driver.budget_ms:
             env["MAKEPAD_SPLASH_BUDGET_MS"] = str(Driver.budget_ms)
-        command = "cd {} && env {} {} > {} 2>&1; exit".format(
-            shlex.quote(str(ROOT)), " ".join(f"{k}={shlex.quote(str(v))}" for k, v in env.items()),
-            shlex.quote(str(binary)), shlex.quote(str(log)))
-        script = 'tell application "Terminal" to do script "{}"'.format(command.replace("\\", "\\\\").replace('"', '\\"'))
-        answer = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True).stdout
-        found = re.search(r"window id (\d+)", answer)
-        self.window = found[1] if found else None
+        if LINUX:
+            self.start_on_weston(binary, home, env, log)
+        else:
+            self.start_in_terminal(binary, env, log)
         self.pid = None
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
@@ -329,11 +339,78 @@ class Shell(Driver):
             if listening:
                 self.pid = int(listening[2])
                 break
+            if self.process is not None and self.process.poll() is not None:
+                break
             time.sleep(0.5)
+        if not self.pid:
+            self.stop_compositor()
         assert self.pid, f"the shell did not start its remote bridge; see {log}"
-        self.ready()
+        try:
+            self.ready()
+        except BaseException:
+            self.stop_compositor()  # a session of its own: nothing else would stop it
+            raise
+
+    def start_in_terminal(self, binary, env, log):
+        command = "cd {} && env {} {} > {} 2>&1; exit".format(
+            shlex.quote(str(ROOT)), " ".join(f"{k}={shlex.quote(str(v))}" for k, v in env.items()),
+            shlex.quote(str(binary)), shlex.quote(str(log)))
+        script = 'tell application "Terminal" to do script "{}"'.format(command.replace("\\", "\\\\").replace('"', '\\"'))
+        answer = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True).stdout
+        found = re.search(r"window id (\d+)", answer)
+        self.window = found[1] if found else None
+
+    def start_on_weston(self, binary, home, env, log):
+        """Linux: a headless weston of the run's own (pixman renders without a
+        GPU; an idle weston stops presenting frames, so it never idles), in a
+        private runtime folder, and the shell on it with Makepad's Wayland
+        backend, each in a session of its own. The XDG folders are the run
+        home's, so nothing lands in the account's own."""
+        # A short folder: a socket's path must fit in 108 bytes.
+        self.runtime = Path(tempfile.mkdtemp(prefix="pdftools-wl-"))
+        socket_name = "wayland-pdftools"
+        weston_log = log.with_name("weston.log")
+        self.weston = subprocess.Popen(
+            ["weston", "--backend=headless", "--renderer=pixman", "--idle-time=0", f"--socket={socket_name}",
+             "--no-config", f"--log={weston_log}"],
+            env=dict(os.environ, XDG_RUNTIME_DIR=str(self.runtime)), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        deadline = time.monotonic() + 20
+        while not (self.runtime / socket_name).exists():
+            if self.weston.poll() is not None or time.monotonic() > deadline:
+                self.stop_compositor()
+                raise AssertionError(f"weston did not open its socket; see {weston_log}")
+            time.sleep(0.1)
+        env.update(XDG_RUNTIME_DIR=self.runtime, WAYLAND_DISPLAY=socket_name)
+        for kind in ("CONFIG", "DATA", "CACHE", "STATE"):
+            env[f"XDG_{kind}_HOME"] = home / "xdg" / kind.lower()
+            env[f"XDG_{kind}_HOME"].mkdir(parents=True, exist_ok=True)
+        with log.open("wb") as handle:
+            self.process = subprocess.Popen([str(binary)], cwd=ROOT, env=dict(os.environ, **{k: str(v) for k, v in env.items()}),
+                                            stdin=subprocess.DEVNULL, stdout=handle, stderr=subprocess.STDOUT,
+                                            start_new_session=True)
+
+    def stop_compositor(self):
+        """Linux: the shell if it still runs, then its weston and the runtime folder."""
+        for process in (self.process, self.weston):
+            if process is None or process.poll() is not None:
+                continue
+            for signal_number in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(process.pid, signal_number)
+                except ProcessLookupError:
+                    break
+                try:
+                    process.wait(timeout=10)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+        if self.weston is not None:
+            shutil.rmtree(self.runtime, ignore_errors=True)
 
     def alive(self):
+        if self.process is not None:
+            return self.process.poll() is None
         try:
             os.kill(self.pid, 0)
             return True
@@ -373,6 +450,8 @@ class Shell(Driver):
         if self.window:
             subprocess.run(["osascript", "-e", f'tell application "Terminal" to close window id {self.window}'],
                            capture_output=True)
+        if self.weston is not None:
+            self.stop_compositor()
         assert exited, f"the shell (pid {self.pid}) did not exit after /quit"
 
 
@@ -829,6 +908,32 @@ def read_mode(app, out, p, dark):
     wait_until(lambda: zoom(app) == before, "the zoom did not go back")
 
 
+NO_IMPORT = "This OctoSense can't open files from the device for PDF Tools."
+
+
+def open_on_linux(app, out, name):
+    """'Open a PDF from this device' on Linux, where no hidden window keeps
+    the dialog shut: True when the step was taken here. With no dialog helper
+    on PATH the shell offers no files.import, so Home says "Not available
+    here" beside the button and the button says why. With one, the run's
+    window has focus in its own compositor and the helper's dialog would
+    really open, which the bridge cannot answer: the step is left out, and
+    run.json says so."""
+    if not LINUX:
+        return False
+    if any(shutil.which(helper) for helper in DIALOG_HELPERS):
+        print("   left out 'Open a PDF from this device': a file dialog helper is on PATH")
+        RECEIPT.setdefault("open_from_device", []).append({"step": name, "left_out": "a file dialog helper is on PATH"})
+        return True
+    app.find("Not available here", "Label")
+    app.tap("Open a PDF from this device", "Button")
+    app.find(NO_IMPORT, "Label")
+    app.grab(out, name)
+    app.gone(NO_IMPORT)  # the banner goes after 8 s; it would cover the next taps
+    RECEIPT.setdefault("open_from_device", []).append({"step": name, "shown": ["Not available here", NO_IMPORT]})
+    return True
+
+
 def covers_kept(jail):
     """The covers in the pdf service's cache: file name -> modification time."""
     folder = jail / ".cache/covers"
@@ -848,7 +953,7 @@ def shell_journey(app, out, dark):
     if not dark and SHELL_JAIL is not None:
         RECEIPT["storage_line"] = check_storage_line(app, SHELL_JAIL)
     app.grab(out, f"{p}01-home")
-    if not dark:
+    if not dark and not open_on_linux(app, out, "01b-open-from-device"):
         app.tap("Open a PDF from this device", "Button")
         app.find("Couldn't open a PDF from this device", "Label")
         app.find("Bring PDF Tools to the front, then choose the file again.", "Label")
@@ -1094,10 +1199,11 @@ def empty(app, out, dark=False):
     p = "d" if dark else ""
     app.find("No PDFs here yet", "Label", timeout=60)
     app.grab(out, f"{p}e01-empty")
-    app.tap("Open a PDF from this device", "Button")
-    app.find("Bring PDF Tools to the front, then choose the file again.", "Label")
-    app.grab(out, f"{p}e02-empty-open")
-    app.tap("OK", "Button")
+    if not open_on_linux(app, out, f"{p}e02-empty-open"):
+        app.tap("Open a PDF from this device", "Button")
+        app.find("Bring PDF Tools to the front, then choose the file again.", "Label")
+        app.grab(out, f"{p}e02-empty-open")
+        app.tap("OK", "Button")
 
 
 def missing(app, out):
@@ -1179,9 +1285,10 @@ def shell_runs(args, runs):
 
     def session(name, home, steps):
         # Never beside another OctoSense: a person's, or another run's that
-        # takes no lock. Wait for it a while, then give up.
+        # takes no lock. Wait for it a while, then give up. (On Linux the run
+        # has a compositor of its own.)
         deadline = time.monotonic() + 1800
-        while octosense_running():
+        while not LINUX and octosense_running():
             assert time.monotonic() < deadline, "another OctoSense is still running: quit it first"
             print("waiting for another OctoSense to quit", flush=True)
             time.sleep(20)
@@ -1250,6 +1357,7 @@ def shell_runs(args, runs):
                 app.style("octosense-dark", "octosense dark")
                 empty(app, out, dark=True)
             session("empty", home, both)
+        (args.output / "run.json").write_text(json.dumps(RECEIPT, indent=1))
 
 
 def dev_bundle(out):

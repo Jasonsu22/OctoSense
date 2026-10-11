@@ -73,6 +73,11 @@ PDF to make room”）、已打开八个 PDF、关闭时有未保存的更改，
 “Lease 2026 (2)”）；文件本身保留应用为它取的名字，标题记录在 `library.json` 中。随后它在
 一个标签中打开。若被拒绝，主页会用通俗的文字说明原因，下面附上宿主自己的消息。
 
+在 Linux 上，宿主的对话框是桌面自带的助手程序，由 Makepad 运行：即 `PATH` 上 zenity、
+qarma、matedialog 和 kdialog 中的第一个。一个都没有的机器得不到 `files.import`
+（`files.status` 回答 `import_supported: false`），所以主页在按钮旁显示“Not available
+here”，点按按钮会说明这个 OctoSense 无法为 PDF Tools 从设备打开文件。
+
 ## 工作原理
 
 所有路径都相对于应用的存储，即 `fs.*` 看到的文件夹；引擎也在同一个文件夹中工作。
@@ -132,10 +137,19 @@ cargo test --locked -p octosense-shell --lib pdftools_model
 OctoSense 在运行时它会等待）。使用 `--card-host` 时，它使用 App Hub 的 `card-host`，后者
 不提供任何宿主服务。
 
+在 Linux 上，`MAKEPAD_HIDE_WINDOWS` 不起作用，所以 `--shell` 不使用 Terminal.app 标签页，而是
+为每次运行启动一个独占的无头 weston：使用 pixman 渲染器，从不进入空闲状态，运行时文件夹是私有
+的。Shell 在它上面运行，使用 Makepad 的 Wayland 后端，XDG 文件夹都放在本次运行的主目录中；
+`/quit` 之后 weston 随之停止。机器上的其他 OctoSense 不会让运行等待。用 `--grab-scale 1`
+得到每点一个像素（那里窗口的 dpi 为 1）。用 `--work` 指定你要测试的磁盘，因为 Ubuntu 的
+`/tmp` 是 tmpfs。
+
 ```sh
 cargo build --locked -p octosense --no-default-features --features app-hub,craft-engines
 python3 apps/pdftools/tests/ui.py --shell target/debug/octosense --lock <dir> --output target/pdftools-ui
 python3 apps/pdftools/tests/ui.py --card-host <App Hub>/target/release/card-host --output target/pdftools-ui
+# Linux
+python3 apps/pdftools/tests/ui.py --shell target/debug/octosense --lock <dir> --work <dir> --grab-scale 1 --output target/pdftools-ui
 ```
 
 运行时给每个处理函数 64 ms 的挂钟时间，因此在繁忙的机器上，一次运行可能因为某个处理函数
@@ -144,7 +158,7 @@ python3 apps/pdftools/tests/ui.py --card-host <App Hub>/target/release/card-host
 
 | 运行 | 覆盖内容 |
 | --- | --- |
-| `shell` | 在 Shell 自己的窗口中、在示例上覆盖每种模式，先浅色，再通过 Shell 自己的样式菜单切到深色（深色这一轮在浅色一轮留下的状态上进行）：主页及其封面、状态栏与存储实际字节数相符、“Open a PDF from this device”被拒绝、阅读和缩略图、阅读模式（从浮动控制条进入，在其中翻页并改变缩放，再用 Exit read mode 或右上角按钮退出，回到同一页、同一缩放）、只用顶栏的查找（“9 matches on 4 pages”，结束时交还左侧面板）、一处高亮及其回复（日期按本机时钟显示，如“Today 19:42”）、一次旋转及其撤销、带页面范围的合并（“One PDF of 5 pages”）、Fill & Sign 放置的姓名缩写、一次带对齐方式和颜色的文字编辑、保存，以及损坏的文件；之后检查封面缓存中每个 PDF 只有一个封面，且都记在 `library.json` 中 |
+| `shell` | 在 Shell 自己的窗口中、在示例上覆盖每种模式，先浅色，再通过 Shell 自己的样式菜单切到深色（深色这一轮在浅色一轮留下的状态上进行）：主页及其封面、状态栏与存储实际字节数相符、“Open a PDF from this device”被拒绝（在没有对话框助手程序的 Linux 上为“Not available here”）、阅读和缩略图、阅读模式（从浮动控制条进入，在其中翻页并改变缩放，再用 Exit read mode 或右上角按钮退出，回到同一页、同一缩放）、只用顶栏的查找（“9 matches on 4 pages”，结束时交还左侧面板）、一处高亮及其回复（日期按本机时钟显示，如“Today 19:42”）、一次旋转及其撤销、带页面范围的合并（“One PDF of 5 pages”）、Fill & Sign 放置的姓名缩写、一次带对齐方式和颜色的文字编辑、保存，以及损坏的文件；之后检查封面缓存中每个 PDF 只有一个封面，且都记在 `library.json` 中 |
 | `restart` | 再次使用同一个主目录：资料库、其中的标题、PDF 离开时所在的页面、按导入方式放入的 `Imported PDF.pdf`、所有当前封面都被保留且没有重新绘制，以及从主页移除的 PDF 连同其保留的封面一起删除 |
 | `full` | 存储被填到距 64 MiB 只差 8 KB：主页上的拒绝提示，然后移除一个 PDF（会再确认一次） |
 | `empty` | 没有 PDF：空资料库及其 Open 按钮，浅色和深色 |
@@ -162,7 +176,9 @@ python3 apps/pdftools/dev-fixture/make_fixture.py <card-host app data>/os.pdftoo
 
 隐藏的 Shell 中无法操作宿主的对话框，而且隐藏窗口永远不会获得焦点，所以文件服务会在对话框
 打开前就拒绝 `files.import`（`foreground_required: …`）；各次运行会检查应用是否显示了这个
-拒绝。
+拒绝。在 Linux 上，运行中的窗口映射在它的 weston 上，并被视为有焦点。`PATH` 上没有对话框
+助手程序时，各次运行改为检查“Not available here”和按钮给出的提示。有助手程序时，对话框会真的
+打开，所以各次运行会跳过这一步，并在 `run.json` 中说明。
 
 ## 状态
 

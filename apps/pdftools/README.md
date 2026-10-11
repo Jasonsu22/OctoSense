@@ -90,6 +90,13 @@ title is taken); the file keeps the name the app gave it and the title lives
 in `library.json`. Then it opens in a tab. A refusal shows on Home in plain
 words with the host's own message below it.
 
+On Linux the host's dialog is the desktop's own helper, which Makepad runs:
+the first of zenity, qarma, matedialog and kdialog on `PATH`. A machine with
+none of them gets no `files.import` (`files.status` says
+`import_supported: false`), so Home says "Not available here" beside the
+button, and the button says that this OctoSense can't open files from the
+device for PDF Tools.
+
 ## How it works
 
 Every path is relative to the app's storage, the folder `fs.*` sees; the
@@ -166,10 +173,20 @@ grab and ends with `/quit`; a lock folder keeps it to one hidden shell on the
 machine, and it waits while another OctoSense runs). With `--card-host` it
 uses App Hub's `card-host`, which serves no host services.
 
+On Linux, where `MAKEPAD_HIDE_WINDOWS` does nothing, `--shell` gives each run
+a headless weston of its own instead of a Terminal.app tab: the pixman
+renderer, never idle, in a private runtime folder. The shell runs on it with
+Makepad's Wayland backend and the run home's XDG folders, and weston stops
+after `/quit`. Another OctoSense on the machine doesn't hold the run up. Give
+`--grab-scale 1` for one pixel per point (the window's dpi is 1 there). Give
+`--work` on the disk you mean to test, because Ubuntu's `/tmp` is tmpfs.
+
 ```sh
 cargo build --locked -p octosense --no-default-features --features app-hub,craft-engines
 python3 apps/pdftools/tests/ui.py --shell target/debug/octosense --lock <dir> --output target/pdftools-ui
 python3 apps/pdftools/tests/ui.py --card-host <App Hub>/target/release/card-host --output target/pdftools-ui
+# Linux
+python3 apps/pdftools/tests/ui.py --shell target/debug/octosense --lock <dir> --work <dir> --grab-scale 1 --output target/pdftools-ui
 ```
 
 The runtime gives one handler 64 ms of wall-clock time, so on a busy machine
@@ -179,7 +196,7 @@ exceeded` in its log); `--budget-ms 1000` raises the hosts' budget
 
 | Run | What it covers |
 | --- | --- |
-| `shell` | Every mode on the samples in the shell's own window, light, then dark through the shell's own style menu (the dark pass works on what the light pass left): Home and its covers, the status line against the storage's own bytes, "Open a PDF from this device" refused, reading and thumbnails, Read mode (entered from the pill, a page turned and the zoom changed in it, left by Exit read mode or the corner control on that page at that zoom), find ("9 matches on 4 pages") from the top bar alone, with the left panel given back when it ends, a highlight and its reply dated on this machine's clock ("Today 19:42"), a rotation and its undo, combine with a page range ("One PDF of 5 pages"), initials placed by Fill & Sign, a text edit with an alignment and a colour, save, and the damaged file; then one cover per PDF in the cover cache, each in `library.json` |
+| `shell` | Every mode on the samples in the shell's own window, light, then dark through the shell's own style menu (the dark pass works on what the light pass left): Home and its covers, the status line against the storage's own bytes, "Open a PDF from this device" refused (on Linux with no dialog helper, "Not available here"), reading and thumbnails, Read mode (entered from the pill, a page turned and the zoom changed in it, left by Exit read mode or the corner control on that page at that zoom), find ("9 matches on 4 pages") from the top bar alone, with the left panel given back when it ends, a highlight and its reply dated on this machine's clock ("Today 19:42"), a rotation and its undo, combine with a page range ("One PDF of 5 pages"), initials placed by Fill & Sign, a text edit with an alignment and a colour, save, and the damaged file; then one cover per PDF in the cover cache, each in `library.json` |
 | `restart` | The same home again: the library, its titles, the page a PDF was left at, `Imported PDF.pdf` placed as an import leaves one, every current cover kept, not drawn again, and a PDF removed from Home taking its kept cover with it |
 | `full` | Storage filled to 8 KB short of its 64 MiB: the refusal on Home, then a removal, which asks once more |
 | `empty` | No PDFs: the empty library and its Open button, light and dark |
@@ -201,7 +218,10 @@ python3 apps/pdftools/dev-fixture/make_fixture.py <card-host app data>/os.pdftoo
 The host's dialog cannot be driven in a hidden shell, and a hidden window
 never has focus, so the files service refuses `files.import` there before the
 dialog opens (`foreground_required: …`); the runs check that the app shows
-that refusal.
+that refusal. On Linux the run's window is mapped on its weston and counts as
+focused. With no dialog helper on `PATH` the runs check "Not available here"
+and the button's note instead. With a helper the dialog would really open, so
+they leave the step out and say so in `run.json`.
 
 ## Status
 
