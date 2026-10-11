@@ -132,7 +132,7 @@ vector、pdf）现已有代理工具，系统代理可以调用：
   `SKILL.md`：frontmatter 为 `name: <family>-engine` 和一行不超过 200 字节的
   `description`，正文写引擎能做什么、系统代理可用的工具、文件规则和示例。旁边是
   按引擎固定版本生成的参考文件：有命令目录的十个引擎（photo、word、deck、cad、
-  light、design、film、effect、vector、pdf，共 4,557 个 id）各有一份
+  light、design、film、effect、vector、pdf，共 4,569 个 id）各有一份
   `commands.md`，每个 id 一行；light 有 `controls.md`，sheet 有 `functions.md`。
   每个服务都嵌入自己的技能（`src/skill.rs`），因此构建发布的技能总与其引擎一致。
   Shell 用与服务相同的条件注册已链接引擎的技能
