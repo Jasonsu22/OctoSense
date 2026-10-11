@@ -56,7 +56,7 @@ cargo run --release -p octosense-home --features mobile-only
 | `-- --module <id>` | Host a linked module in-process instead of as a child process |
 | `-- --test-action <name>` | Fire a shell action at startup (see [Run on a desktop](#run-on-a-desktop)) |
 | `MAKEPAD_WM_TEST_APP=<app>[:<count>]` | Launch an app (count times) once the shell is up |
-| `MAKEPAD_APP_CONFIG='{"mail_demo":true}'` | Serve Mail from a demo mailbox (password `demo`); development builds only (debug, or `--features dev-mode`) |
+| `MAKEPAD_APP_CONFIG='{"mail_demo":true}'` | Serve Mail from a demo mailbox (password `demo`) |
 | `OCTOSENSE_HOME=<dir>` | Keep state somewhere other than `~/.octosense` |
 
 **Android APK.** `rom/scripts/build-home.sh` (a wrapper for
@@ -308,13 +308,14 @@ never holds a socket or a password. For a demo mailbox (password `demo`):
 
 ```sh
 # desktop, from phone/
-MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense-home --features mobile-only,dev-mode
+MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense-home --features mobile-only
 # phone: a development test package (see Launch-time test hooks)
 adb shell am start -n <test package>/.MakepadApp --es makepad.APP_CONFIG '{"mail_demo":true}'
 ```
 
-A release build ignores `mail_demo` (both commands are **unverified** since
-that change).
+The desktop command reads `MAKEPAD_APP_CONFIG` as a local setting; a phone
+release build ignores it, so the phone line needs a development test package
+(**unverified** since that change).
 
 The earlier native News, Photos and Maps modules are deleted (native-apps ADR 0004 §1, [#113](https://github.com/OctoSense-org/OctoSense/pull/113));
 none of the system apps has a native module any more.

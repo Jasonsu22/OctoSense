@@ -35,28 +35,30 @@ use crate::backend::OctosUiAgent;
 /// Makepad copies the launch extras `makepad.<NAME>` into `MAKEPAD_<NAME>`,
 /// and OpenHarmony entry abilities pass `makepad.*` launch parameters the
 /// same way, so on a phone another app can set them by starting this one.
-/// Only a development build reads them (`dev_mode`: debug assertions or
-/// feature `dev-mode`, build.rs); a release build behaves as if none were
-/// set. Read every `MAKEPAD_*` hook through this, never `std::env::var`.
+/// On a phone (`cfg(mobile)`: Android or OpenHarmony) only a development
+/// build reads them (`dev_mode`: debug assertions or feature `dev-mode`,
+/// build.rs); a release build behaves as if none were set. A desktop reads
+/// them, because its environment is the local user's, like a command-line
+/// flag. Read every `MAKEPAD_*` hook through this, never `std::env::var`.
 pub(crate) fn launch_var(name: &str) -> Option<String> {
-    launch_set_in(cfg!(dev_mode), name).then(|| std::env::var(name).ok()).flatten()
+    launch_set_in(cfg!(mobile), cfg!(dev_mode), name).then(|| std::env::var(name).ok()).flatten()
 }
 
 /// [`launch_var`] for a variable whose presence is the setting.
 pub(crate) fn launch_flag(name: &str) -> bool {
-    launch_set_in(cfg!(dev_mode), name)
+    launch_set_in(cfg!(mobile), cfg!(dev_mode), name)
 }
 
-/// Whether `name` is set and this build may read it. A release build
+/// Whether `name` is set and this build may read it. A phone release build
 /// notes once that it ignored a launch-time hook, without its value.
-fn launch_set_in(development: bool, name: &str) -> bool {
+fn launch_set_in(mobile: bool, development: bool, name: &str) -> bool {
     if std::env::var_os(name).is_none() {
         return false;
     }
-    if !development {
+    if mobile && !development {
         static NOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !NOTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            log::info!("launch input: {name} ignored; a release build reads no launch-time hooks");
+            log::info!("launch input: {name} ignored; a release build on a phone reads no launch-time hooks");
         }
         return false;
     }
@@ -68,14 +70,16 @@ mod launch_input_tests {
     use super::launch_set_in;
 
     #[test]
-    fn a_release_build_reads_no_launch_hook() {
+    fn only_a_phone_release_build_ignores_a_launch_hook() {
         // A name no other test sets.
         let name = "MAKEPAD_LAUNCH_INPUT_TEST_PROBE";
         std::env::set_var(name, "/sdcard/Download/provision");
-        assert!(!launch_set_in(false, name), "a release build ignores it");
-        assert!(launch_set_in(true, name), "a development build reads it");
+        assert!(!launch_set_in(true, false, name), "a phone release build ignores it");
+        assert!(launch_set_in(true, true, name), "a phone development build reads it");
+        assert!(launch_set_in(false, false, name), "a desktop release build reads it");
+        assert!(launch_set_in(false, true, name), "a desktop development build reads it");
         std::env::remove_var(name);
-        assert!(!launch_set_in(true, name));
+        assert!(!launch_set_in(false, false, name), "unset is never read");
     }
 
     /// Every `MAKEPAD_*` hook goes through `launch_var`/`launch_flag`, so
@@ -6767,8 +6771,8 @@ impl App {
             // that embeds this app as a library (`default-features = false`,
             // no `standalone`) gets neither — nor does a standalone build
             // launched with `OCTOS_APP_DEVGOAL=0`. An explicit
-            // `MAKEPAD_DEV_GOAL_FILE` still runs anywhere, in a development
-            // build (`launch_var`).
+            // `MAKEPAD_DEV_GOAL_FILE` still runs anywhere (`launch_var`: on a
+            // phone a development build, a desktop always).
             #[cfg(target_os = "android")]
             let mission: Option<(String, String)> = match crate::launch_var("MAKEPAD_DEV_GOAL_FILE") {
                 Some(p) => std::fs::read_to_string(&p).ok().map(|g| (g, p)),
@@ -7064,7 +7068,8 @@ impl App {
     /// live LLM generation can be driven without touching the native composer via
     /// adb input. Fires once (clears the env var). Session/open and turn/start
     /// are ordered on the stdio pipe, so submitting right after `clear_chat` is
-    /// safe. A development build only (`launch_var`).
+    /// safe. On a phone a development build only; a desktop reads it
+    /// (`launch_var`).
     fn fire_auto_prompt(&mut self, cx: &mut Cx) {
         if let Some(p) = crate::launch_var("MAKEPAD_AUTO_PROMPT") {
             std::env::remove_var("MAKEPAD_AUTO_PROMPT");
@@ -9045,10 +9050,11 @@ impl MatchEvent for App {
             }
         }
 
-        // Launch-time provisioning below is for development builds only
-        // (`launch_var`): any app on the phone can start this one with these
-        // extras, so a release build provisions only through the person's
-        // own QR scan and PIN, or the login screen.
+        // On a phone the launch-time provisioning below is for development
+        // builds only (`launch_var`): any app can start this one with these
+        // extras, so a phone release build provisions only through the
+        // person's own QR scan and PIN, or the login screen. A desktop reads
+        // them, the way it reads a command-line flag.
         //
         // Provisioning deploy (non-rooted devices): `makepad.PROVISION_DIR`
         // (→ env MAKEPAD_PROVISION_DIR) names a world-readable staging dir

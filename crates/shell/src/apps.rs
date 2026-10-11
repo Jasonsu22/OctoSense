@@ -207,8 +207,8 @@ pub(crate) mod test_system_apps {
 /// app can open: `mail` keeps accounts and passwords for the Mail app;
 /// `glance` takes the cards apps publish to the glance screen (glance.rs).
 /// `mail_demo` in MAKEPAD_APP_CONFIG serves a demo mailbox from a file vault
-/// instead (no keychain, no network): `MAKEPAD_APP_CONFIG='{"mail_demo":true}'`,
-/// in a development build only (`launch_input`).
+/// instead (no keychain, no network): `MAKEPAD_APP_CONFIG='{"mail_demo":true}'`.
+/// A desktop reads it; a phone only in a development build (`launch_input`).
 /// `news` fetches News's feeds on a timer, with no model (ADR 0002), into
 /// the Card runner's host directory, so it keeps fetching while News is
 /// closed. Last, every system app no service answers gets the notice
@@ -655,9 +655,9 @@ pub fn matches_running_app(app: &crate::clients::AppDef, running_id: &str, title
 /// What a launch of `app` opens `module` with. The Card runner opens the app
 /// the launcher row names — a system app by its `os.*` manifest id, an
 /// installed one by its own. Any other module opens with what
-/// MAKEPAD_APP_CONFIG gives it in a development build
-/// (`{"module_open": {"<id>": {...}}}`, or `mail_endpoint` for a linked
-/// `mail` module; `launch_input`), else empty.
+/// MAKEPAD_APP_CONFIG gives it (`{"module_open": {"<id>": {...}}}`, or
+/// `mail_endpoint` for a linked `mail` module; a desktop reads it, a phone
+/// only in a development build, `launch_input`), else empty.
 pub fn module_open(module: &'static dyn AppModule, app: &crate::clients::AppDef) -> Result<makepad_app_module::ValidatedOpen, String> {
     let schema = module.open_schema();
     if module.id() == "card" {

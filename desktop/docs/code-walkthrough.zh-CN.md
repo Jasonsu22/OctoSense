@@ -89,10 +89,10 @@ cargo run --locked --release -p octosense-card-host --bin card-host -- --bundle 
 例如，在 OctoSense 根目录运行 Mail 的演示服务：
 
 ```sh
-MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --locked --release -p octosense --features dev-mode
+MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --locked --release -p octosense
 ```
 
-演示账户密码为 `demo`，发送留在演示环境。只有开发版读取 `MAKEPAD_APP_CONFIG`（`crates/shell/src/launch_input.rs`：在手机上它以任何应用都能设置的 intent extra 形式到达），所以要加 `--features dev-mode`（这一改动后**未验证**）。新商店应用在 OctoSense App Flow（原 Design Flow）中开发，使用 App Hub 的准入/发布流程。[本地签名目录配方](../README.zh-CN.md#发布前试用自己的应用)用于在发布前测试应用能否安装到 Shell。
+演示账户密码为 `demo`，发送留在演示环境。新商店应用在 OctoSense App Flow（原 Design Flow）中开发，使用 App Hub 的准入/发布流程。[本地签名目录配方](../README.zh-CN.md#发布前试用自己的应用)用于在发布前测试应用能否安装到 Shell。
 
 [`desktop/system-apps.json`](../system-apps.json) 和
 [`phone/system-apps.json`](../../phone/system-apps.json) 选择 `apps/` 中的 bundle。

@@ -31,7 +31,7 @@ cargo run --release -p octosense-home --features mobile-only
 | `-- --module <id>` | 在进程内托管已链接的模块，而不是作为子进程 |
 | `-- --test-action <name>` | 启动时触发一个 Shell 动作（见[在桌面电脑上运行](#在桌面电脑上运行)） |
 | `MAKEPAD_WM_TEST_APP=<app>[:<count>]` | Shell 启动后打开某个应用（可指定次数） |
-| `MAKEPAD_APP_CONFIG='{"mail_demo":true}'` | 用演示邮箱提供 Mail（密码为 `demo`）；仅限开发版（调试构建或 `--features dev-mode`） |
+| `MAKEPAD_APP_CONFIG='{"mail_demo":true}'` | 用演示邮箱提供 Mail（密码为 `demo`） |
 | `OCTOSENSE_HOME=<dir>` | 把状态数据保存在 `~/.octosense` 以外的位置 |
 
 **Android APK。** `rom/scripts/build-home.sh`（`build-home.py` 的包装脚本）构建 Home APK 及其 System Bridge APK，一起签名，把 octos 内核作为 `liboctos.so` 打包进去，并写出 `OctoSenseHome.apk`、`OctoSenseBridge.apk` 和一份 `build.json` 回执。它从不安装或刷机。在仓库根目录构建一对使用 Makepad 开发密钥签名的独立开发版：
@@ -212,12 +212,12 @@ Mail 通过 `mail` 宿主服务（[`apps/mail/host-service`](../apps/mail/host-s
 
 ```sh
 # desktop, from phone/
-MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense-home --features mobile-only,dev-mode
+MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense-home --features mobile-only
 # 手机：开发版测试包（见“启动时的测试钩子”）
 adb shell am start -n <test package>/.MakepadApp --es makepad.APP_CONFIG '{"mail_demo":true}'
 ```
 
-发布版会忽略 `mail_demo`（这一改动后两条命令均**未验证**）。
+桌面命令会把 `MAKEPAD_APP_CONFIG` 当作本机设置读取；手机发布版会忽略它，所以手机那行需要开发版测试包（这一改动后**未验证**）。
 
 早期的原生 News、Photos 和 Maps 模块已删除（原生应用 ADR 0004 §1，[#113](https://github.com/OctoSense-org/OctoSense/pull/113)）；所有系统应用都不再有原生模块。
 
