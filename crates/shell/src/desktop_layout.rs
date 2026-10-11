@@ -14,6 +14,11 @@ pub struct DesktopWindow {
 pub struct DesktopWindows {
     pub enabled: bool,
     pub windows: Vec<DesktopWindow>,
+    /// How many points of the desk's bottom a dock that floats over it
+    /// covers, which the shell sets from `App::dock_overlay` before every
+    /// draw: maximized and snapped windows fill the [`room`] above it. 0 for
+    /// a dock that reserves its strip (Windows) or no dock.
+    pub dock: f64,
 }
 
 /// The margins a new window keeps from the desk's edges: it opens this far
@@ -42,6 +47,15 @@ pub fn room(area: LRect, dock: f64) -> LRect {
 pub fn preferred_size(w: f64, h: f64, area: LRect, dock: f64) -> (f64, f64) {
     let room = room(area, dock);
     (w.min(room.w - 2.0 * MARGIN_X).max(MIN_W), h.min(room.h - 2.0 * MARGIN_Y).max(MIN_H))
+}
+
+/// A native module's own size for a window it opens (makepad's
+/// `WindowRequest::Open { size }`), as a hint [`preferred_size`] clamps like
+/// a script app's manifest `window`: `None` when it names no size, or one
+/// that is not a size at all (a side that is zero, negative or not finite),
+/// so the window opens at the default size.
+pub fn requested_size(size: Option<(f64, f64)>) -> Option<(f64, f64)> {
+    size.filter(|(w, h)| w.is_finite() && h.is_finite() && *w > 0.0 && *h > 0.0)
 }
 
 impl DesktopWindows {
@@ -92,12 +106,18 @@ impl DesktopWindows {
             self.windows.push(w);
         }
     }
+    /// Where each of `clients` draws on `area`. A maximized or snapped window
+    /// fills (its part of) the [`room`] above a dock that floats over the
+    /// desk, so it ends at the dock's top edge instead of behind the dock; its
+    /// own rect, which restoring returns to, is untouched. Any other window
+    /// keeps its rect, kept reachable ([`fit`]).
     pub fn rects(&self, clients: &[ClientId], area: LRect) -> Vec<(ClientId, LRect)> {
+        let room = room(area, self.dock);
         self.windows
             .iter()
             .filter(|w| clients.contains(&w.client) && !w.minimized)
             .map(|w| {
-                let r = if w.maximized { area } else if let Some(zone)=w.snap {zone.bounds(area)} else { fit(w.rect, area) };
+                let r = if w.maximized { room } else if let Some(zone)=w.snap {zone.bounds(room)} else { fit(w.rect, area) };
                 (w.client, r)
             })
             .collect()
@@ -224,6 +244,79 @@ mod tests {
         let mut docked = DesktopWindows::default();
         docked.ensure_sized(1, area, None, 78.0);
         assert_eq!(docked.get(1).unwrap().rect, plain.get(1).unwrap().rect);
+    }
+
+    /// The hidden shell's work area, for `style` on a desk ending at y 899,
+    /// with the dock it draws: the OctoSense dock covers its bottom 78 points.
+    fn desk_for(style: crate::desktop::DesktopStyle) -> (LRect, DesktopWindows) {
+        let mut tween = crate::desktop::StyleTween::default();
+        tween.select(style);
+        tween.step(1.0);
+        let area = LRect::new(10.0, 42.0, 1380.0, 899.0 - 10.0 - tween.reserved_height() - 42.0);
+        let mut d = DesktopWindows { enabled: true, ..Default::default() };
+        d.dock = crate::desktop::dock_overlay(&tween, 899.0, area.y + area.h);
+        (area, d)
+    }
+
+    #[test]
+    fn maximize_and_snaps_end_above_a_dock_that_floats_over_the_desk() {
+        let (area, mut d) = desk_for(crate::desktop::DesktopStyle::OctoSense);
+        assert_eq!((area, d.dock), (LRect::new(10.0, 42.0, 1380.0, 847.0), 78.0));
+        let dock_top = area.y + area.h - d.dock;
+        d.ensure(1, area);
+        let restore = d.get(1).unwrap().rect;
+        d.get_mut(1).unwrap().maximized = true;
+        assert_eq!(d.rects(&[1], area)[0].1, LRect::new(10.0, 42.0, 1380.0, 769.0));
+        assert_eq!(d.rects(&[1], area)[0].1.y + 769.0, dock_top, "maximized, it ends at the dock's top");
+        // Restoring brings back the rect it had.
+        d.get_mut(1).unwrap().maximized = false;
+        assert_eq!(d.rects(&[1], area)[0].1, restore);
+        // A snap fills its part of the room above the dock.
+        d.get_mut(1).unwrap().snap = Some(crate::snap::Zone::Left);
+        assert_eq!(d.rects(&[1], area)[0].1, LRect::new(10.0, 42.0, 690.0, 769.0));
+        d.get_mut(1).unwrap().snap = Some(crate::snap::Zone::BottomRight);
+        let r = d.rects(&[1], area)[0].1;
+        assert_eq!((r.y + r.h, r.h), (dock_top, 384.5));
+        d.get_mut(1).unwrap().snap = None;
+        assert_eq!(d.rects(&[1], area)[0].1, restore);
+    }
+
+    #[test]
+    fn maximize_where_the_dock_reserves_its_strip_or_is_absent_is_unchanged() {
+        // Windows' taskbar is outside the work area; Omarchy has no dock.
+        for style in [crate::desktop::DesktopStyle::Windows, crate::desktop::DesktopStyle::Omarchy] {
+            let (area, mut d) = desk_for(style);
+            assert_eq!(d.dock, 0.0, "{style:?}");
+            d.ensure(1, area);
+            d.get_mut(1).unwrap().maximized = true;
+            assert_eq!(d.rects(&[1], area)[0].1, area, "{style:?}");
+            d.get_mut(1).unwrap().maximized = false;
+            d.get_mut(1).unwrap().snap = Some(crate::snap::Zone::Bottom);
+            assert_eq!(d.rects(&[1], area)[0].1, crate::snap::Zone::Bottom.bounds(area), "{style:?}");
+        }
+    }
+
+    #[test]
+    fn a_native_window_size_request_is_clamped_like_a_hint() {
+        let area = LRect::new(10.0, 42.0, 1380.0, 847.0);
+        // Not a size: the default, as with no request.
+        for size in [None, Some((0.0, 0.0)), Some((-640.0, 480.0)), Some((640.0, f64::NAN)), Some((f64::INFINITY, 480.0))] {
+            assert_eq!(requested_size(size), None, "{size:?}");
+        }
+        let mut d = DesktopWindows::default();
+        d.ensure_sized(1, area, requested_size(Some((0.0, 0.0))), 78.0);
+        let mut plain = DesktopWindows::default();
+        plain.ensure(1, area);
+        assert_eq!(d.get(1).unwrap().rect, plain.get(1).unwrap().rect, "no request keeps today's default");
+        // Larger than the desk: the room above the dock, less the margins.
+        d.ensure_sized(2, area, requested_size(Some((4000.0, 3000.0))), 78.0);
+        assert_eq!((d.get(2).unwrap().rect.w, d.get(2).unwrap().rect.h), (1296.0, 705.0));
+        // A size the desk holds: as asked.
+        d.ensure_sized(3, area, requested_size(Some((640.0, 480.0))), 78.0);
+        assert_eq!((d.get(3).unwrap().rect.w, d.get(3).unwrap().rect.h), (640.0, 480.0));
+        // A tiny one: the shell's minimum, as a resize drag leaves it.
+        d.ensure_sized(4, area, requested_size(Some((10.0, 10.0))), 78.0);
+        assert_eq!((d.get(4).unwrap().rect.w, d.get(4).unwrap().rect.h), (MIN_W, MIN_H));
     }
 
     #[test]

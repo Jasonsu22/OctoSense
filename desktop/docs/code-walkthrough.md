@@ -134,6 +134,26 @@ bottom edge is never behind it. Without `window`, a window opens at
 The person can resize either, and phones ignore the hint. PDF Tools asks for
 its designs' 1536 x 1024.
 
+A native module that opens an extra window (makepad's `ModuleWindows::open`)
+may name a size for it too. `App::drain_module_windows` clamps that size the
+same way, through `desktop_layout::requested_size`; a size of zero, a
+negative one or one that is not finite counts as none, and the window then
+opens at the default size. No native app OctoSense ships names a size today:
+Rinx's Moments and Article editor windows pass none, and the other native apps
+open no extra windows.
+
+A maximized window, from its title-bar button, a double-click on its title
+or the maximize shortcut, fills the work area. So does a snapped window,
+which fills its part of the work area. Both stop at the top edge of a dock
+that floats over the desk: `DesktopWindows::rects` fills the
+`desktop_layout::room` above it, with the dock's height that the shell sets
+before every draw (`DesktopWindows::dock`) from `App::dock_overlay`, the same
+lookup a new window's size uses. While the dock hides because the shell is
+full screen (`desktop::dock_auto_hides`), that height is 0, so a maximized
+window fills the whole work area. Restoring brings back the
+window's own rect. With a dock that reserves its strip (Windows) or no dock,
+a maximized window fills the whole work area, as before.
+
 Admission verifies the bundle and resolves its metadata and resource limits.
 Capability names disclose usage, not execution permission. A script's
 `host.request(...)` runs under that app's identity. App Hub's

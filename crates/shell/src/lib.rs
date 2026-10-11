@@ -2889,7 +2889,7 @@ impl App {
             let existing = |this: &Self, key: LiveId| this.module_windows.iter()
                 .find(|(_, (o, k))| *o == owner && *k == key).map(|(w, _)| *w);
             match request {
-                WindowRequest::Open { key, title, root, size: _ } => {
+                WindowRequest::Open { key, title, root, size } => {
                     if let Some(window) = existing(self, key) {
                         self.activate_client(cx, window);
                         continue;
@@ -2902,7 +2902,20 @@ impl App {
                     slot.card_app = self.state.as_ref().and_then(|s| s.clients.get(&owner)).and_then(|o| o.card_app.clone());
                     self.state_mut().clients.insert(id, slot);
                     let gap = self.state_mut().gap;
-                    self.state_mut().layout.insert(id, area, gap);
+                    // The size the module asks for is a hint, clamped as a
+                    // script app's manifest `window` is (above a dock that
+                    // floats over the desk); none, or a size that is not
+                    // one, is the default. A phone shows no extra windows.
+                    let preferred = if self.state_mut().style.target.mobile() {
+                        None
+                    } else {
+                        desktop_layout::requested_size(size.map(|s| (s.x, s.y)))
+                    };
+                    let dock = if preferred.is_some() { self.dock_overlay(cx, area) } else { 0.0 };
+                    self.state_mut().layout.insert_sized(id, area, gap, preferred, dock);
+                    if let (Some((w, h)), Some(window)) = (preferred, self.state_mut().layout.desktop.get(id)) {
+                        log!("wm: {} asks for a {}x{} window {:?}; it opens at {}x{}", app, w, h, title, window.rect.w, window.rect.h);
+                    }
                     self.desk(cx).borrow_mut::<WmDesk>().map(|mut d| {
                         d.mark_module(id);
                         d.with_module_view(cx, id, |cx, v| v.set_root(cx, id, vm_id, root));
@@ -6829,6 +6842,11 @@ impl App {
         if let Event::Draw(_) = event {
             if self.state.is_some() {
                 self.sync_ai_pane_geometry(cx);
+                // Maximized and snapped windows end above a floating dock:
+                // its height from `dock_overlay`, the one lookup for it.
+                let area = self.desk_area(cx);
+                let dock = self.dock_overlay(cx, area);
+                self.state_mut().layout.desktop.dock = dock;
             }
         }
         // SUPER + mouse:272 / mouse:273 — move and resize (tiling.lua).

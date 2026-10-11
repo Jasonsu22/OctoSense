@@ -109,6 +109,19 @@ MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --locked --release -p octosens
 上沿算起（`desktop::dock_overlay`），所以窗口的下边缘不会位于程序坞后面。没有 `window` 时，窗口宽度取桌面的 72%、高度取 76%，最大 1000 x 720 点。
 两种情况下用户都可以调整窗口大小；手机忽略这个提示。PDF Tools 请求它设计图的 1536 x 1024。
 
+原生模块打开额外窗口（makepad 的 `ModuleWindows::open`）时，也可以为它指定尺寸。
+`App::drain_module_windows` 通过 `desktop_layout::requested_size` 以同样的方式限制这个尺寸；
+尺寸为零、为负数或不是有限值时视为没有指定，窗口按默认尺寸打开。OctoSense 自带的原生应用
+目前都没有指定尺寸：Rinx 的 Moments 和 Article editor 窗口不传尺寸，其他原生应用不打开额外窗口。
+
+通过标题栏按钮、双击标题或最大化快捷键最大化的窗口会填满工作区；吸附的窗口填满工作区中
+属于它的那一部分。两者都止于浮在桌面之上的程序坞的上沿：`DesktopWindows::rects` 填满程序坞
+上方的 `desktop_layout::room`，程序坞的高度由 shell 在每次绘制之前从 `App::dock_overlay` 取得并记录
+（`DesktopWindows::dock`），新窗口的尺寸也用同一个查询。Shell 全屏、程序坞因此隐藏时
+（`desktop::dock_auto_hides`），这个高度为 0，最大化的窗口会填满整个工作区。
+还原时窗口回到它自己的位置和尺寸。程序坞预留区域（Windows）或没有程序坞时，最大化的窗口
+像以前一样填满整个工作区。
+
 准入验证应用包，解析元数据与资源上限。能力名称披露用途，不是执行许可。脚本的 `host.request(...)` 按应用身份执行。
 App Hub 的 `crates/appstore/src/services.rs` 定义 `HostService`、`ServiceCall` 和回复机制；
 调用携带应用身份和宿主目录，供服务检查。只有明确声明的 Agent 工具，才会把相应操作提供给模型。
