@@ -99,7 +99,11 @@ app's own agent and `tools.json`, the system toolbox, `glance.publish` and
   100:1 past 100 KiB), inflates every entry against its declared size and
   refuses a nested zip or an audio or video part (`held:`), an encrypted
   `.pptx` (`protected:`) and a legacy `.ppt` or any other file it does not
-  know (`unsupported:`); engine-side bounds stay with #448. Present's order
+  know (`unsupported:`); engine-side bounds stay with #448. The one nested
+  zip it lets through is an Office package's embedded object under
+  `ppt/embeddings/` (a chart's workbook, an embedded document), which
+  neither the service nor deckcraft ever unzips; it still counts against
+  every bound, and a zip anywhere else stays `held:`. Present's order
   and build steps (`deck.show`, `deck.view {step}`) come from
   deckcraft-anim at the engine's pin. Caps: drawing 48–3840 px wide, 4096
   a side and 16 MP, 500 shapes or slides named a call, 1,024 table cells

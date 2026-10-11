@@ -467,13 +467,16 @@ fn hostile() -> Vec<(&'static str, Vec<u8>, &'static str)> {
     let bomb = fx::package(vec![Part::deflated("ppt/slides/slide1.xml", &vec![0u8; 16 << 20])], "");
     let liar = fx::package(vec![Part { declared: Some(100), ..Part::deflated("ppt/slides/slide1.xml", &vec![b' '; 1 << 20]) }], "");
     let many = fx::zip(&(0..=guard::MAX_ENTRIES).map(|i| Part::stored(&format!("f{i}"), b"")).collect::<Vec<_>>());
-    let nested = fx::package(vec![Part::stored("ppt/embeddings/sheet.xlsx", &fx::zip(&[Part::stored("a", b"b")]))], "");
+    let nested = fx::package(vec![Part::stored("ppt/slides/inner.zip", &fx::zip(&[Part::stored("a", b"b")]))], "");
+    // A chart's workbook that is a zip bomb: refused by its ratio.
+    let workbook_bomb = fx::package(vec![Part::deflated("ppt/embeddings/Microsoft_Excel_Worksheet1.xlsx", &[fx::zip(&[Part::stored("a", b"b")]), vec![0u8; 16 << 20]].concat())], "");
     let media = fx::package(vec![Part::stored("ppt/media/media1.mp4", b"\0\0\0\x18ftypisom")], "");
     vec![
         ("bomb.pptx", bomb, "held"),
         ("liar.pptx", liar, "damaged"),
         ("many.pptx", many, "held"),
         ("nested.pptx", nested, "held"),
+        ("workbook_bomb.pptx", workbook_bomb, "held"),
         ("media.pptx", media, "held"),
         ("locked.pptx", fx::ole(&["EncryptionInfo", "EncryptedPackage"]), "protected"),
         ("legacy.ppt", fx::ole(&["PowerPoint Document", "Current User"]), "unsupported"),
@@ -512,6 +515,16 @@ fn the_import_guard_refuses_before_the_engine_runs_on_every_path() {
     w.ok("info", json!({ "path": "ok.deckcraft" }));
     w.ok("open", json!({ "path": "ok.deckcraft" }));
     assert_eq!(engine_reads(), before + 2);
+    // A .pptx whose chart keeps its workbook as an embedded object (a zip
+    // that neither the service nor the engine unzips) opens, on every path.
+    let workbook = fx::zip(&[Part::deflated("[Content_Types].xml", b"<Types/>"), Part::deflated("xl/workbook.xml", b"<workbook/>")]);
+    w.put("chart.pptx", &fx::with_parts(&pptx(&sample(4)), vec![Part::deflated("ppt/embeddings/Microsoft_Excel_Worksheet1.xlsx", &workbook)]));
+    let before = engine_reads();
+    let opened = w.ok("open", json!({ "path": "chart.pptx" }));
+    assert_eq!(opened["slides"], 4);
+    w.ok("cover", json!({ "path": "chart.pptx" }));
+    w.ok("info", json!({ "path": "chart.pptx" }));
+    assert_eq!(engine_reads(), before + 3);
     // The engine's own refusal of what passed the guard.
     w.put("broken.deckcraft", &fx::native(vec![], "{not json"));
     coded(&w.err("open", json!({ "path": "broken.deckcraft" })), "damaged");

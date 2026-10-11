@@ -24,11 +24,18 @@
 //!   Any other zip (`.key`, `.odp`) is `unsupported:`.
 //! - Then every entry is inflated, bounded, into a scratch buffer (nothing
 //!   is kept but its first bytes): one that inflates past its declared size
-//!   is `damaged:`; a zip inside the zip is `held:`; and so is any audio or
-//!   video part, found by its extension, by the content type the package
-//!   declares for it (`[Content_Types].xml`, or a native deck's
-//!   `presentation.json`), or by its first bytes (a movie or sound
-//!   container's signature).
+//!   is `damaged:`. Any audio or video part is `held:`, found by its
+//!   extension, by the content type the package declares for it
+//!   (`[Content_Types].xml`, or a native deck's `presentation.json`), or by
+//!   its first bytes (a movie or sound container's signature).
+//! - So is a zip inside the zip, except an Office package's embedded object
+//!   ([`EMBEDDINGS`]): a chart's workbook or an embedded document is a zip
+//!   that neither the service nor the engine ever unzips (deckcraft's only
+//!   zip readers are its package and native readers; it reads a chart from
+//!   the chart's own cached values, and keeps only an embedded object's
+//!   XML and preview). Such a part passes, held like every entry to the
+//!   bounds above (entries, name, declared and actual size, ratio, totals)
+//!   and to the media checks; its own entries are never read, by anyone.
 //! - **An OLE compound file** (`D0 CF 11 E0`): one whose directory holds an
 //!   `EncryptedPackage` stream is a password-protected Office file
 //!   (`protected:`); any other is a legacy `.ppt` or not a presentation at
@@ -420,6 +427,18 @@ fn zip_signature(head: &[u8]) -> bool {
     head.starts_with(b"PK\x03\x04") || head.starts_with(b"PK\x05\x06") || head.starts_with(b"PK\x07\x08")
 }
 
+/// Where an Office package keeps its embedded objects (a chart's workbook,
+/// an embedded document or OLE object), whose parts may be zips themselves.
+pub(crate) const EMBEDDINGS: &str = "ppt/embeddings/";
+
+/// Whether `name` is an embedded object's part: under [`EMBEDDINGS`], with
+/// no empty, `.` or `..` segment and no backslash, so no other part can
+/// borrow the exemption by its spelling.
+fn embedded_object(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.strip_prefix(EMBEDDINGS).is_some_and(|rest| !rest.contains('\\') && rest.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != ".."))
+}
+
 /// Pairs of names, lowercased.
 type Pairs = Vec<(String, String)>;
 
@@ -549,7 +568,8 @@ fn zip(b: &[u8]) -> Result<Format, String> {
                 scan.feed(chunk)
             }
         })?;
-        if zip_signature(&inflated.head) {
+        // An Office package's embedded object may be a zip: nothing unzips it.
+        if zip_signature(&inflated.head) && !(format == Format::Pptx && embedded_object(&e.name)) {
             return Err(held(format!("the presentation holds a zip inside its zip (`{}`), which the deck service does not open (#448)", shown(&e.name))));
         }
         let lower = e.name.to_ascii_lowercase();
@@ -753,6 +773,20 @@ pub(crate) mod fixtures {
         zip(&parts)
     }
 
+    /// The zip `bytes` again, every entry read back with the guard's own
+    /// reader and deflated, with `extra` after them: an engine-written
+    /// package with parts added.
+    pub(crate) fn with_parts(bytes: &[u8], extra: Vec<Part>) -> Vec<u8> {
+        let mut parts: Vec<Part> = super::directory(bytes)
+            .unwrap()
+            .iter()
+            .filter(|e| !e.is_dir())
+            .map(|e| Part::deflated(&e.name, &super::inflate(bytes, e, true, &mut |_| {}).unwrap().kept.unwrap()))
+            .collect();
+        parts.extend(extra);
+        zip(&parts)
+    }
+
     /// A native deck's skeleton: its `mimetype` and `presentation.json`.
     pub(crate) fn native(extra: Vec<Part>, json: &str) -> Vec<u8> {
         let mut parts = vec![Part::stored("mimetype", deckcraft_format::MIMETYPE.as_bytes()), Part::deflated("presentation.json", json.as_bytes())];
@@ -898,11 +932,48 @@ mod tests {
     }
 
     #[test]
-    fn nested_zips_and_media_are_held() {
-        let inner = zip(&[Part::stored("a.txt", b"hello")]);
-        let e = coded(check("nested.pptx", &package(vec![Part::stored("ppt/embeddings/Microsoft_Excel_Worksheet1.xlsx", &inner)], "")), "held");
-        assert!(e.contains("zip inside its zip"), "{e}");
-        coded(check("nested.pptx", &package(vec![Part::deflated("ppt/embeddings/x.bin", &inner)], "")), "held");
+    fn embedded_objects_pass_and_other_nested_zips_and_media_are_held() {
+        let inner = zip(&[Part::deflated("[Content_Types].xml", b"<Types/>"), Part::deflated("xl/workbook.xml", b"<workbook/>")]);
+        // A chart's workbook, an embedded document or object: zips that
+        // nothing unzips, under the package's embeddings.
+        let xlsx = "<Default Extension=\"xlsx\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\"/>";
+        assert_eq!(check("chart.pptx", &package(vec![Part::stored("ppt/embeddings/Microsoft_Excel_Worksheet1.xlsx", &inner)], xlsx)), Ok(Format::Pptx));
+        let objects = vec![
+            Part::deflated("ppt/embeddings/Microsoft_Word_Document.docx", &inner),
+            Part::deflated("ppt/embeddings/oleObject1.bin", &inner),
+            Part::stored("PPT/Embeddings/Sheet2.xlsx", &inner),
+        ];
+        assert_eq!(check("objects.pptx", &package(objects, "")), Ok(Format::Pptx));
+        // A zip anywhere else stays held, and so does one only spelled to
+        // look embedded, or one in a native deck, which embeds no objects.
+        for name in ["ppt/media/x.zip", "ppt/slides/x.zip", "x.zip", "ppt/embeddings/../media/x.zip", "ppt/embeddings//x.xlsx", "ppt/embeddings/a/./x.xlsx", "ppt\\embeddings\\x.xlsx"] {
+            let e = coded(check("nested.pptx", &package(vec![Part::stored(name, &inner)], "")), "held");
+            assert!(e.contains("zip inside its zip"), "{name}: {e}");
+        }
+        coded(check("nested.deckcraft", &native(vec![Part::stored("ppt/embeddings/x.xlsx", &inner)], "{}")), "held");
+        // An embedded object is held to every other bound: its declared
+        // size, its name, its actual size, and the ratio.
+        let big = Part { declared: Some(MAX_ENTRY_BYTES + 1), ..Part::stored("ppt/embeddings/big.xlsx", &vec![7u8; 1 << 20]) };
+        coded(check("big.pptx", &package(vec![big], "")), "held");
+        let long = format!("ppt/embeddings/{}.xlsx", "n".repeat(MAX_NAME_BYTES));
+        coded(check("name.pptx", &package(vec![Part::stored(&long, &inner)], "")), "held");
+        let liar = Part { declared: Some(100), ..Part::deflated("ppt/embeddings/liar.xlsx", &[inner.clone(), vec![0u8; 1 << 20]].concat()) };
+        coded(check("liar.pptx", &package(vec![liar], "")), "damaged");
+        // A workbook that is a zip bomb (16 MiB in a few kilobytes) is
+        // refused by its directory entry's ratio, before anything is
+        // inflated or unzipped: with its stream broken it is refused the
+        // same way, where inflating it would have found it damaged.
+        let name = "ppt/embeddings/bomb.xlsx";
+        let mut bomb = package(vec![Part::deflated(name, &[inner.clone(), vec![0u8; 16 << 20]].concat())], "");
+        assert!(bomb.len() < 1 << 20, "{} bytes", bomb.len());
+        let e = coded(check("bomb.pptx", &bomb), "held");
+        assert!(e.contains(name) && e.contains("100 to 1"), "{e}");
+        let body = bomb.windows(name.len()).position(|w| w == name.as_bytes()).unwrap() + name.len();
+        bomb[body + 64..body + 128].fill(0xFF);
+        let e = coded(check("bomb.pptx", &bomb), "held");
+        assert!(e.contains("100 to 1"), "{e}");
+        // Media under the embeddings is still media.
+        coded(check("movie.pptx", &package(vec![Part::stored("ppt/embeddings/clip.mp4", b"\0\0\0\x18ftypisom")], "")), "held");
         // Media by extension, by declared type, by signature; in a native
         // deck by signature and by its manifest's content type.
         let e = coded(check("movie.pptx", &package(vec![Part::stored("ppt/media/media1.mp4", b"\0\0\0\0data")], "")), "held");
