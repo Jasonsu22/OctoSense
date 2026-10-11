@@ -837,7 +837,7 @@ impl AppRegistry {
             return if self.module(id).is_some() { Hosting::Module } else { Hosting::Process };
         }
         // Neither the store nor Settings has a process form.
-        if matches!(id, "apphub" | "settings") && self.module(id).is_some() {
+        if matches!(id, "apphub" | "settings" | "updater") && self.module(id).is_some() {
             return Hosting::Module;
         }
         if self.modules.iter().any(|m| m.id() == id) && !self.overrides.contains_key(id) {
@@ -931,6 +931,12 @@ mod tests {
         register_host_services();
         octosense_appstore::host_api::check_manifest(&manifest)
             .expect("compatible card installs and reopens without warming a module first");
+        #[cfg(wasm_functions)]
+        assert_eq!(
+            octosense_appstore::host_api::available_versions().get("wasm.sockets"),
+            Some(&1),
+            "socket components must be installable before the first app calls wasm"
+        );
     }
 
     #[test]
