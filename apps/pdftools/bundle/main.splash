@@ -424,10 +424,10 @@ fn edit_risks(check){
     let out = []
     if check == nil { return out }
     if !optional(check, "keeps_font", true) {
-        out.push("This paragraph's font can't show all of this text, so PDF Tools sets it in " + font_label(optional(check, "font", "")) + ".")
+        out.push("Set in " + font_label(optional(check, "font", "")) + ": this paragraph's font can't show all of this text.")
     }
     let covers = optional(check, "covers", 0)
-    if covers > 0 { out.push("It needs more room than the paragraph has and runs into " + plural(covers, "line", "lines") + " of text nearby.") }
+    if covers > 0 { out.push("Longer than its box: it runs into " + plural(covers, "line", "lines") + " of text nearby.") }
     if optional(check, "off_page", false) { out.push("Part of it falls off the page.") }
     out
 }
@@ -471,7 +471,7 @@ fn line_pieces(paragraphs, n){
 // The note for a paragraph that is one piece of a line, or "".
 fn pieces_note(pieces){
     if pieces < 2 { return "" }
-    "The PDF stores this line in " + pieces + " pieces, so an edit changes only the piece you clicked."
+    "The PDF stores this line in " + pieces + " pieces: only this one changes."
 }
 
 start_timeout(0.05, || boot())
@@ -3634,37 +3634,78 @@ fn place_editor(t){
 }
 fn edit_panel(t){
     View{width: right_w(t) height: Fill flow: Down padding: 14
-        RoundedView{width: Fill height: Fit flow: Down show_bg: true draw_bg +: {color: pt_card border_size: 1.0 border_color: pt_line border_radius: 6.0}
-            View{width: Fill height: 54 flow: Right align: Align{y: 0.5} padding: Inset{left: 16 right: 8}
-                Label{padding: 0 width: Fill text: "Edit text" draw_text +: {color: pt_ink text_style: theme.font_regular{font_size: 12.5}}}
-                if t.edit != nil { IconBtn{icon_walk: Walk{width: 15 height: 15} draw_icon +: {svg: icon("close") color: pt_icon} on_click: || cancel_edit(cur_tab())} }
-            }
-            Line{draw_bg.color: pt_line_soft}
-            if t.edit == nil {
-                View{width: Fill height: Fit padding: 16 Label{padding: 0 width: Fill flow: Flow.Right{wrap: true} text: pick(t.can_edit, "Click a paragraph on the page to edit its text.", "This PDF doesn't allow editing.") draw_text +: {color: pt_muted text_style: theme.font_regular{font_size: 12 line_spacing: 1.4}}}}
-            }
-            if t.edit != nil {
-                View{width: Fill height: 52 flow: Right align: Align{y: 0.5} padding: Inset{left: 16}
-                    Label{padding: 0 text: "Paragraph " + t.edit.n draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12.5}}}
+        // With something to say before Apply, the card takes the panel's
+        // height: its fields scroll and Apply and Cancel stay in view at its
+        // foot (the notes would push them out of a short window). Otherwise
+        // it is design 08's card, as tall as what it holds.
+        if t.edit != nil && edit_says(t.edit) {
+            RoundedView{width: Fill height: Fill flow: Down show_bg: true draw_bg +: {color: pt_card border_size: 1.0 border_color: pt_line border_radius: 6.0}
+                edit_head(t)
+                edit_paragraph(t.edit)
+                ScrollYView{width: Fill height: Fill flow: Down
+                    View{width: Fill height: Fit flow: Down padding: Inset{left: 16 right: 16 top: pick(short(), 12, 18) bottom: 12} spacing: pick(short(), 8, 10)
+                        edit_fields(t.edit)
+                    }
                 }
                 Line{draw_bg.color: pt_line_soft}
-                View{width: Fill height: Fit flow: Down padding: Inset{left: 16 right: 16 top: pick(short(), 12, 18) bottom: pick(short(), 12, 20)} spacing: pick(short(), 8, 10)
-                    Label{padding: 0 text: "Font" draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}
-                    RoundedView{width: Fill height: 40 flow: Right align: Align{y: 0.5} padding: Inset{left: 12 right: 12} show_bg: true draw_bg +: {color: pt_field border_size: 1.0 border_color: pt_field_line border_radius: 4.0}
-                        Label{padding: 0 width: Fill max_lines: 1 text_overflow: TextOverflow.Ellipsis text: font_text(t.edit) draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}
-                    }
-                    if edit_says(t.edit) { edit_notes(t.edit) }
-                    View{width: Fill height: Fit padding: Inset{top: pick(short(), 4, 14)} Label{padding: 0 text: "Alignment" draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}}
-                    align_segments(t.edit)
-                    View{width: Fill height: Fit padding: Inset{top: pick(short(), 4, 14)} Label{padding: 0 text: "Colour" draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}}
-                    colour_box(t.edit)
-                    View{width: Fill height: Fit flow: Right margin: Inset{top: pick(short(), 12, 22)} spacing: 14
-                        Primary{width: Fill height: 37 text: apply_label(t.edit) on_click: || apply_edit(cur_tab())}
-                        Outline{width: Fill height: 37 text: "Cancel" on_click: || cancel_edit(cur_tab())}
+                View{width: Fill height: Fit flow: Down padding: Inset{left: 16 right: 16 top: 12 bottom: pick(short(), 12, 16)}
+                    edit_buttons(t.edit)
+                }
+            }
+        }
+        if t.edit == nil || !edit_says(t.edit) {
+            RoundedView{width: Fill height: Fit flow: Down show_bg: true draw_bg +: {color: pt_card border_size: 1.0 border_color: pt_line border_radius: 6.0}
+                edit_head(t)
+                if t.edit == nil {
+                    View{width: Fill height: Fit padding: 16 Label{padding: 0 width: Fill flow: Flow.Right{wrap: true} text: pick(t.can_edit, "Click a paragraph on the page to edit its text.", "This PDF doesn't allow editing.") draw_text +: {color: pt_muted text_style: theme.font_regular{font_size: 12 line_spacing: 1.4}}}}
+                }
+                if t.edit != nil {
+                    edit_paragraph(t.edit)
+                    View{width: Fill height: Fit flow: Down padding: Inset{left: 16 right: 16 top: pick(short(), 12, 18) bottom: pick(short(), 12, 20)} spacing: pick(short(), 8, 10)
+                        edit_fields(t.edit)
+                        View{width: Fill height: Fit margin: Inset{top: pick(short(), 12, 22)} edit_buttons(t.edit)}
                     }
                 }
             }
         }
+    }
+}
+// The Edit card's head: its title, and while a paragraph is open, its close cross.
+fn edit_head(t){
+    View{width: Fill height: Fit flow: Down
+        View{width: Fill height: 54 flow: Right align: Align{y: 0.5} padding: Inset{left: 16 right: 8}
+            Label{padding: 0 width: Fill text: "Edit text" draw_text +: {color: pt_ink text_style: theme.font_regular{font_size: 12.5}}}
+            if t.edit != nil { IconBtn{icon_walk: Walk{width: 15 height: 15} draw_icon +: {svg: icon("close") color: pt_icon} on_click: || cancel_edit(cur_tab())} }
+        }
+        Line{draw_bg.color: pt_line_soft}
+    }
+}
+fn edit_paragraph(e){
+    View{width: Fill height: Fit flow: Down
+        View{width: Fill height: 52 flow: Right align: Align{y: 0.5} padding: Inset{left: 16}
+            Label{padding: 0 text: "Paragraph " + e.n draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12.5}}}
+        }
+        Line{draw_bg.color: pt_line_soft}
+    }
+}
+// Font (and what the edit would do, under it), Alignment and Colour.
+fn edit_fields(e){
+    View{width: Fill height: Fit flow: Down spacing: pick(short(), 8, 10)
+        Label{padding: 0 text: "Font" draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}
+        RoundedView{width: Fill height: 40 flow: Right align: Align{y: 0.5} padding: Inset{left: 12 right: 12} show_bg: true draw_bg +: {color: pt_field border_size: 1.0 border_color: pt_field_line border_radius: 4.0}
+            Label{padding: 0 width: Fill max_lines: 1 text_overflow: TextOverflow.Ellipsis text: font_text(e) draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}
+        }
+        if edit_says(e) { edit_notes(e) }
+        View{width: Fill height: Fit padding: Inset{top: pick(short(), 4, 14)} Label{padding: 0 text: "Alignment" draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}}
+        align_segments(e)
+        View{width: Fill height: Fit padding: Inset{top: pick(short(), 4, 14)} Label{padding: 0 text: "Colour" draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}}
+        colour_box(e)
+    }
+}
+fn edit_buttons(e){
+    View{width: Fill height: Fit flow: Right spacing: 14
+        Primary{width: Fill height: 37 text: apply_label(e) on_click: || apply_edit(cur_tab())}
+        Outline{width: Fill height: 37 text: "Cancel" on_click: || cancel_edit(cur_tab())}
     }
 }
 

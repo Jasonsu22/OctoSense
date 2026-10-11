@@ -349,11 +349,11 @@ fn the_edit_panel_says_what_an_edit_would_change_before_apply() {
     assert_eq!(
         risks("{keeps_font: false font: \"Helvetica-Bold\" covers: 3 off_page: false}"),
         json!([
-            "This paragraph's font can't show all of this text, so PDF Tools sets it in Helvetica Bold.",
-            "It needs more room than the paragraph has and runs into 3 lines of text nearby."
+            "Set in Helvetica Bold: this paragraph's font can't show all of this text.",
+            "Longer than its box: it runs into 3 lines of text nearby."
         ])
     );
-    assert_eq!(risks("{keeps_font: true font: \"X\" covers: 1 off_page: true}"), json!(["It needs more room than the paragraph has and runs into 1 line of text nearby.", "Part of it falls off the page."]));
+    assert_eq!(risks("{keeps_font: true font: \"X\" covers: 1 off_page: true}"), json!(["Longer than its box: it runs into 1 line of text nearby.", "Part of it falls off the page."]));
     // Apply says so while there is something to say, but not for a refusal
     // (Apply would only be refused again).
     let label = |check: &str, error: &str| pdftools_model(&format!("apply_label({{check: {check} check_error: \"{error}\"}}).to_json()"));
@@ -394,7 +394,7 @@ fn a_title_printed_in_pieces_is_counted_as_pieces() {
     // Two columns side by side are not one line in pieces.
     let columns = "[{n: 1 box: [50, 100, 200, 12] size: 10}, {n: 2 box: [300, 100, 200, 12] size: 10}]";
     assert_eq!(pdftools_model(&format!("line_pieces({columns}, 1).to_json()")), json!(1));
-    assert_eq!(pdftools_model("pieces_note(5).to_json()"), json!("The PDF stores this line in 5 pieces, so an edit changes only the piece you clicked."));
+    assert_eq!(pdftools_model("pieces_note(5).to_json()"), json!("The PDF stores this line in 5 pieces: only this one changes."));
     assert_eq!(pdftools_model("pieces_note(1).to_json()"), json!(""));
 }
 

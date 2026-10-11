@@ -110,7 +110,9 @@ copy of the document and drops it), so no edit garbles a page unannounced:
 While the panel has a warning, Apply reads "Apply anyway"; an edit that
 hasn't been checked as it stands yet is checked first, and is made at once
 only if there is nothing to say. A refusal shows in red and Apply only
-repeats it. A document whose security settings forbid changes, or that opens
+repeats it. With notes showing, the card takes the panel's height: its
+fields scroll, and Apply and Cancel stay at its foot, in view even in the
+desktop's default window. A document whose security settings forbid changes, or that opens
 for reading only, is refused the same way.
 
 The pdf service's `pdftools_fixture` example writes a page as a web browser
