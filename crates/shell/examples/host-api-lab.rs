@@ -227,6 +227,12 @@ impl AppMain for App {
             )
             .unwrap_err();
             let mut checks = os_batch_checks(&reply);
+            checks["native_storage_identity_scoped"] = json!(self.card.borrow_mut()
+                .and_then(|mut card| card.isolate_heap_key(cx))
+                .is_some_and(|heap| {
+                    splash_storage::storage_for_heap(heap, &self.app).is_some()
+                        && splash_storage::storage_for_heap(heap, "org.example.other").is_none()
+                }));
             checks
                 .as_object_mut()
                 .unwrap()
@@ -291,8 +297,12 @@ fn os_batch_checks(reply: &Result<Value, String>) -> Value {
             && batch["location_discovery"]["descriptor"]["agent_access"] == "foreground-only",
         "background_import_refused": denied("background_import_allowed", "background_import_error"),
         "background_export_refused": denied("background_export_allowed", "background_export_error"),
+        // Refused before any OS call. Since makepad#118 (OctoSense #450) the
+        // runtime no longer refuses on the app's grants: App Hub's dispatcher
+        // refuses a foreground-only method from a background surface, and the
+        // device service checks the person's consent behind it.
         "location_without_consent_refused": batch["background_location_allowed"] == false
-            && batch["background_location_error"] == "authorization_required: request location.permission.request from the foreground app",
+            && batch["background_location_error"] == "location.sample is unavailable to agents/background surfaces",
     })
 }
 
@@ -348,7 +358,10 @@ fn public_service_checks(reply: &Result<Value, String>) -> serde_json::Map<Strin
             && p["video_discovery"]["data"]["version"] == 1,
         "microphone_recording_discovery": described("record_discovery", "microphone.record_start", "foreground-only"),
         "background_audio_playback_refused": refused("audio_play", "background"),
-        "undeclared_microphone_recording_refused": p["record_start"]["ok"] == false
-            && p["record_start"]["error"] == r#"this app was not granted "microphone", which "microphone.record_start" needs"#
+        // A readable permission status never authorizes recording. The tool's
+        // callback retains background provenance even without a declaration.
+        "background_microphone_recording_refused": p["record_start"]["ok"] == false
+            && p["record_start"]["error"].as_str()
+                == Some("microphone.record_start is unavailable to agents/background surfaces")
     }).as_object().unwrap().clone()
 }

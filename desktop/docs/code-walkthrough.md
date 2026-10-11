@@ -119,7 +119,23 @@ tests installation into the shell before publication.
 `agent_apps` and `register_host_services`. App Hub's native `CARD_MODULE` hosts
 these interpreted programs. The optional AppCard assistant has its own module.
 
-Admission resolves manifest capability requests into policy. A script's
+On the desktop, a script app's window opens at the size its manifest asks
+for in `window`, App Hub's optional hint, which needs `"schema_minor": 1`.
+`App::launch_module_as` in [`lib.rs`](../../crates/shell/src/lib.rs) reads it
+with `apps::window_hint`, from the bundle the Card runner opens, and
+`preferred_size` in
+[`desktop_layout.rs`](../../crates/shell/src/desktop_layout.rs) clamps it to
+the desk minus the margins every new window keeps (42 points left and right,
+32 top and bottom), never below 80 x 60. Where the dock floats over the desk
+instead of reserving a strip (the macOS and OctoSense styles), the bottom
+margin is kept above the dock (`desktop::dock_overlay`), so the window's
+bottom edge is never behind it. Without `window`, a window opens at
+72% of the desk's width and 76% of its height, at most 1000 x 720 points.
+The person can resize either, and phones ignore the hint. PDF Tools asks for
+its designs' 1536 x 1024.
+
+Admission verifies the bundle and resolves its metadata and resource limits.
+Capability names disclose usage, not execution permission. A script's
 `host.request(...)` runs under that app's identity. App Hub's
 `crates/appstore/src/services.rs` defines `HostService`, `ServiceCall` and replies;
 the call supplies an app identity and host directory for the service to check.
@@ -170,7 +186,8 @@ The shipped declarations provide these operations:
 | Photos, Maps, YouTube, Camera | `<namespace>.notify` only; the shell's `NoticeService` handles each application's namespace. Camera is packaged by Home. |
 
 AI providers configures the host and currently declares no app agent. Calendar's
-contained month/day view and editor use the explicit `calendar` capability. Its
+contained month/day view and editor disclose `calendar` use; the service
+checks their admitted app identity and data scope. Its
 UI and the agent tools above share one local event store. A saved event's Glance
 card opens that exact record in Calendar, and editing it refreshes its card.
 
@@ -179,7 +196,7 @@ Follow [`glance_notice.rs`](../../crates/shell/src/glance_notice.rs) and
 for the shared notice. Mail and News keep their own services and install notice
 callbacks; `serve_system_apps` adds a `NoticeService` only for namespaces without
 a service. `publish_args` fills app name/icon, time, title and body, then
-`glance::publish_for` checks the app's `glance` grant. The notice opens its app and
+`glance::publish_for` checks current publisher admission and account identity. The notice opens its app and
 sets `notify: true`. Calendar keeps its own event and agenda card templates.
 
 The broader [`glance.publish`](../../crates/shell/src/glance.rs) API accepts either
@@ -205,7 +222,7 @@ Keep the data boundaries visible when adding a tool:
 
 | Boundary | Access path |
 | --- | --- |
-| Script storage | Runtime storage APIs under the app's capability and jail. |
+| Script storage | Runtime storage APIs in the app's bounded private jail, even when `storage` is omitted. |
 | Agent workspace | The peer's app/account folder through granted file tools and shell policy. |
 | Host-service database | Explicit Rust methods/tools for Calendar events, Mail cache or News data. Credentials stay with host sheets and vaults. |
 

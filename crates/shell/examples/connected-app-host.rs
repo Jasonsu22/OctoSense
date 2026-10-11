@@ -240,6 +240,9 @@ impl MatchEvent for App {
         self.sheet = self.ui.splash(cx, ids!(sheet));
         let app = self.card.clone();
         octosense_app_policy::splash_adapter::apply(&app, cx, &settings);
+        app.set_host_tag(cx, Some(self.app.clone()));
+        octosense_appstore::apply_device_consent(cx, &bundle, &app)
+            .expect("Apply the admitted app's device consent boundary");
         app.set_text(cx, &source);
     }
 }
@@ -248,6 +251,7 @@ impl AppMain for App {
         makepad_widgets::theme_mod(vm);
         script_eval!(vm, {mod.theme = mod.themes.light});
         makepad_widgets::widgets_mod(vm);
+        octosense_shell::charts::register(vm);
         widget_async::set_splash_theme(widget_async::SplashTheme::Light);
         octosense_markdown_editor::register();
         octosense_oauth_service::sign_in_code::register();

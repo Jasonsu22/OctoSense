@@ -166,9 +166,7 @@ fn sharing_has_bounded_text_no_file_authority_and_truthful_handoff() {
         parse_operation("share", &json!({"text":text})).unwrap(),
         Operation::Share { text: text.into() }
     );
-    assert!(!parse_operation("share", &json!({"text":text}))
-        .unwrap()
-        .needs_storage());
+    assert!(matches!(parse_operation("share", &json!({"text":text})).unwrap(), Operation::Share { .. }));
     for args in [
         json!({"text":""}),
         json!({"text":"a\0b"}),
@@ -216,6 +214,25 @@ fn native_event_pump_never_waits_for_a_producer_queue_lock() {
 }
 
 #[test]
+fn an_import_reports_only_a_clean_display_name() {
+    if cfg!(target_os = "android") {
+        assert_eq!(display_name("Report.pdf"), None, "Android's loader names every selection \"document\"");
+        return;
+    }
+    assert_eq!(display_name("Q3 report.pdf").as_deref(), Some("Q3 report.pdf"));
+    assert_eq!(display_name("/Users/someone/Documents/Q3.pdf").as_deref(), Some("Q3.pdf"), "never a folder");
+    assert_eq!(display_name("C:\\Users\\someone\\Q3.pdf").as_deref(), Some("Q3.pdf"));
+    assert_eq!(display_name("Invoice\u{202E}fdp.exe").as_deref(), Some("Invoicefdp.exe"), "no direction overrides");
+    assert_eq!(display_name("line\nbreak\t.pdf").as_deref(), Some("linebreak.pdf"));
+    for nothing in ["", "   ", "/", ".", "..", "dir/", "\u{200B}"] {
+        assert_eq!(display_name(nothing), None, "{nothing:?}");
+    }
+    let long = format!("{}.pdf", "é".repeat(100));
+    let shown = display_name(&long).unwrap();
+    assert!(shown.len() <= 128 && long.starts_with(&shown), "cut on a character boundary: {shown}");
+}
+
+#[test]
 fn imports_take_documents_above_the_script_write_limit_within_the_quota() {
     let import = Operation::Import { path: "a.pdf".into() };
     let photo = Operation::PickPhoto { path: "a.png".into() };
@@ -259,7 +276,7 @@ fn a_selected_document_is_staged_off_the_ui_thread_and_linked_in_against_the_liv
     octosense_appstore::set_data_root(root.join("apps"));
     let dir = crate::host_tools::script_apps::tests::stamped_bundle("camera", APP, |dir, manifest| {
         manifest["id"] = json!(APP);
-        manifest["capabilities"] = json!(["files", "storage"]);
+        manifest["capabilities"] = json!([]);
         manifest["requires"] = json!(["host-api-v1"]);
         manifest["storage"] = json!({"max_bytes": 8 << 20});
         manifest.as_object_mut().unwrap().remove("agent");
@@ -276,7 +293,7 @@ fn a_selected_document_is_staged_off_the_ui_thread_and_linked_in_against_the_liv
         pack: Box::leak(packed.pack_json.into_boxed_str()),
         assets: &[],
     });
-    let manifest = admission(APP, true).unwrap();
+    let manifest = admission(APP, &root.join("apps/.host")).unwrap();
 
     let jail = root.join("jail");
     std::fs::create_dir_all(&jail).unwrap();
@@ -322,7 +339,7 @@ fn a_selected_document_is_staged_off_the_ui_thread_and_linked_in_against_the_liv
                 args: json!({"path": path}),
                 from_sheet: false,
                 may_prompt: true,
-                host_dir: root.join(".host"),
+                host_dir: root.join("apps/.host"),
             },
             heap,
             request,
@@ -354,7 +371,7 @@ fn a_selected_document_is_staged_off_the_ui_thread_and_linked_in_against_the_liv
     let big = 3 * MAX_FILE_BYTES as usize;
     assert_eq!(
         import(1, "documents/report.pdf", big).unwrap(),
-        json!({"cancelled": false, "path": "documents/report.pdf", "bytes": big})
+        json!({"cancelled": false, "path": "documents/report.pdf", "bytes": big, "name": "document.pdf"})
     );
     assert_eq!(std::fs::read(jail.join("documents/report.pdf")).unwrap(), vec![7u8; big]);
     let full = import(2, "documents/second.pdf", 6 * MAX_FILE_BYTES as usize).unwrap_err();

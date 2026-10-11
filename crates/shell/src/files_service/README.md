@@ -2,6 +2,8 @@
 English | [简体中文](README.zh-CN.md)
 
 `files` connects a foreground app to the native document picker. An import copies
+
+Capability declarations describe intended use. File calls require current app admission; `storage_granted` reports whether the calling isolate has live app storage. Native chooser interaction, the storage jail and quota remain required.
 one selected document into that app's existing Splash filesystem; an export saves
 a snapshot of an existing app file. Apps receive an app-relative path and byte
 count, never a host path or Android provider URI. No separate blob store is created.
@@ -9,7 +11,7 @@ count, never a host path or Android provider URI. No separate blob store is crea
 | Method | Arguments | Result |
 | --- | --- | --- |
 | `files.status` | `{}` | `import_supported`, `export_supported`, `photo_pick_supported`, `text_share_supported`, `storage_granted`, `max_file_bytes`, `max_import_bytes`, `max_share_text_bytes`, `foreground_required` |
-| `files.import` | `{"path":"/documents/report.pdf"}` | `{"cancelled":false,"path":"/documents/report.pdf","bytes":123}` |
+| `files.import` | `{"path":"/documents/report.pdf"}` | `{"cancelled":false,"path":"/documents/report.pdf","bytes":123,"name":"Q3 report.pdf"}` |
 | `files.pick_photo` | `{"path":"/photos/new.png"}` | Choose one PNG/JPEG/WebP; returns the import fields plus its signature-detected `mime` |
 | `files.share` | `{"text":"Good morning 🌅"}` | Android only: `{"handoff":"chooser_opened","delivery":"unknown"}` after native chooser dispatch |
 | `files.export` | `{"path":"/documents/report.pdf","name":"Report.pdf"}` | The same success fields; `name` is an optional basename suggested to the native dialog |
@@ -31,8 +33,14 @@ reason to automatically open another chooser. Closing the app cannot recall an O
 chooser that has already opened. The native result uses a unique per-request
 correlation value and a bounded reply; stale replies are discarded.
 
+`name` is the chosen document's display name, for the app to show: the file
+name without folders, control characters or invisible direction marks, at most 128
+bytes. The app still decides where the copy is stored (`path`). It is absent when
+nothing is left after cleaning, and on Android, whose document loader does not
+query a display name yet.
+
 Cancelling a document/image dialog returns `{"cancelled":true}`. Read failures, unsupported
-platforms, missing grants, full storage, and busy transfers are errors. Imports
+platforms, invalid app admission, full storage, and busy transfers are errors. Imports
 require a new destination: they cannot overwrite an existing app document. The
 app can read imported bytes with `fs.read_bytes(path)`, pass that array to an image
 widget, or copy it with `fs.write_bytes(other_path, fs.read_bytes(path))`.
@@ -86,7 +94,10 @@ does not assert that a document provider is installed or that device UI was test
 Shell integration: register `files_service::register()` beside platform service
 registration in `apps.rs`; call `files_service::handle_event(cx, event)` beside the
 platform service event handler in `lib.rs`, outside the App Hub service mutex. Feed `files_service::set_foreground_app` from the
-same host-owned focused-client/expanded-Glance identity used for native audio.
+same host-owned focused-client/expanded-Glance identity used for native audio:
+the focused client's script-app manifest id (`ClientSlot::foreground_app`,
+recorded when the window opens), a system app's `os.<name>` as much as an
+installed app's own id.
 The App Hub contract must know `files` and provide `Replier::isolate_key`; Makepad
 must include the corresponding storage/dialog adapter. Runtime discovery can
 advertise `storage.binary_write@1` for the native `fs.write_bytes` method.

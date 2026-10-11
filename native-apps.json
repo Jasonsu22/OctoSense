@@ -79,7 +79,7 @@
     {
       "id": "sheets",
       "crate": "makepad-sheets",
-      "source": { "git": "https://github.com/OctoSense-org/makepad.git", "rev": "32d6415fb7476345ad36ee4f98d6f844d1f07fd2", "local": ".sources/makepad/apps/sheets" },
+      "source": { "git": "https://github.com/OctoSense-org/makepad.git", "rev": "d653bc4493619ab979ccff165cf48c0c63b77d19", "local": ".sources/makepad/apps/sheets" },
       "module": "makepad_sheets::SHEETS_MODULE",
       "bin": "sheets",
       "bin_features": ["standalone"],
@@ -110,7 +110,7 @@
     {
       "id": "terminal",
       "crate": "makepad-terminal",
-      "source": { "git": "https://github.com/OctoSense-org/makepad.git", "rev": "32d6415fb7476345ad36ee4f98d6f844d1f07fd2", "local": ".sources/makepad/apps/terminal" },
+      "source": { "git": "https://github.com/OctoSense-org/makepad.git", "rev": "d653bc4493619ab979ccff165cf48c0c63b77d19", "local": ".sources/makepad/apps/terminal" },
       "module": "makepad_terminal::TERMINAL_MODULE",
       "bin": "terminal",
       "default_features": true,
@@ -152,12 +152,12 @@
       "id": "apphub",
       "feature": "app-hub",
       "crate": "octosense-app-hub-app",
-      "source": { "git": "https://github.com/OctoSense-org/OctoSense-App-Hub", "rev": "28745c0f6fd71986820e9835183a3045f61baefc", "local": null },
+      "source": { "git": "https://github.com/OctoSense-org/OctoSense-App-Hub", "rev": "d86101d7206162b73ea873e2a31b48364600a110", "local": null },
       "module": ["octosense_app_hub_app::APP_HUB_MODULE", "octosense_app_hub_app::CARD_MODULE"],
       "bin": null,
       "default_features": true,
       "crate_features": [],
-      "implies": ["dep:octosense-appstore", "dep:octosense-app-policy", "dep:octosense-app-hub", "dep:octosense-app-contract", "dep:octosense-mail-service", "dep:octosense-oauth-service", "dep:octosense-markdown-editor", "dep:octosense-news-service", "dep:octosense-sheets-service", "dep:octosense-photo-service", "dep:octosense-engine-area", "dep:octosense-calendar-service", "octosense-ai-host/llm"],
+      "implies": ["dep:octosense-appstore", "dep:octosense-app-policy", "dep:octosense-app-hub", "dep:octosense-app-contract", "dep:octosense-mail-service", "dep:octosense-oauth-service", "dep:octosense-markdown-editor", "dep:octosense-news-service", "dep:octosense-sheets-service", "dep:octosense-engine-area", "dep:octosense-calendar-service", "octosense-ai-host/llm"],
       "hosting": { "macos": "module", "windows": "module", "linux": "module", "android": "module", "ios": "module", "ohos": "module" },
       "shells": { "desktop": "default", "phone": "default" },
       "native_mobile": "always",
@@ -176,7 +176,7 @@
     {
       "id": "calculator",
       "crate": "makepad-calculator",
-      "source": { "git": "https://github.com/OctoSense-org/makepad.git", "rev": "32d6415fb7476345ad36ee4f98d6f844d1f07fd2", "local": ".sources/makepad/apps/calculator" },
+      "source": { "git": "https://github.com/OctoSense-org/makepad.git", "rev": "d653bc4493619ab979ccff165cf48c0c63b77d19", "local": ".sources/makepad/apps/calculator" },
       "module": "makepad_calculator::CALCULATOR_MODULE",
       "bin": "calculator",
       "bin_features": ["standalone"],
@@ -199,7 +199,7 @@
     {
       "id": "clock",
       "crate": "makepad-clock",
-      "source": { "git": "https://github.com/OctoSense-org/makepad.git", "rev": "32d6415fb7476345ad36ee4f98d6f844d1f07fd2", "local": ".sources/makepad/apps/clock" },
+      "source": { "git": "https://github.com/OctoSense-org/makepad.git", "rev": "d653bc4493619ab979ccff165cf48c0c63b77d19", "local": ".sources/makepad/apps/clock" },
       "module": "makepad_clock::CLOCK_MODULE",
       "bin": "clock",
       "bin_features": ["standalone"],
@@ -222,7 +222,7 @@
     {
       "id": "notes",
       "crate": "makepad-notes",
-      "source": { "git": "https://github.com/OctoSense-org/makepad.git", "rev": "32d6415fb7476345ad36ee4f98d6f844d1f07fd2", "local": ".sources/makepad/apps/notes" },
+      "source": { "git": "https://github.com/OctoSense-org/makepad.git", "rev": "d653bc4493619ab979ccff165cf48c0c63b77d19", "local": ".sources/makepad/apps/notes" },
       "module": "makepad_notes::NOTES_MODULE",
       "bin": "notes",
       "bin_features": ["standalone"],
@@ -246,7 +246,7 @@
     {
       "id": "reminders",
       "crate": "makepad-reminders",
-      "source": { "git": "https://github.com/OctoSense-org/makepad.git", "rev": "32d6415fb7476345ad36ee4f98d6f844d1f07fd2", "local": ".sources/makepad/apps/reminders" },
+      "source": { "git": "https://github.com/OctoSense-org/makepad.git", "rev": "d653bc4493619ab979ccff165cf48c0c63b77d19", "local": ".sources/makepad/apps/reminders" },
       "module": "makepad_reminders::REMINDERS_MODULE",
       "bin": "reminders",
       "bin_features": ["standalone"],
@@ -270,7 +270,7 @@
     {
       "id": "weather",
       "crate": "makepad-weather",
-      "source": { "git": "https://github.com/OctoSense-org/makepad.git", "rev": "32d6415fb7476345ad36ee4f98d6f844d1f07fd2", "local": ".sources/makepad/apps/weather" },
+      "source": { "git": "https://github.com/OctoSense-org/makepad.git", "rev": "d653bc4493619ab979ccff165cf48c0c63b77d19", "local": ".sources/makepad/apps/weather" },
       "module": "makepad_weather::WEATHER_MODULE",
       "bin": "weather",
       "bin_features": ["standalone"],
@@ -312,7 +312,7 @@
     {
       "id": "task",
       "crate": "makepad-task",
-      "source": { "git": "https://github.com/OctoSense-org/makepad.git", "rev": "32d6415fb7476345ad36ee4f98d6f844d1f07fd2", "local": ".sources/makepad/apps/task" },
+      "source": { "git": "https://github.com/OctoSense-org/makepad.git", "rev": "d653bc4493619ab979ccff165cf48c0c63b77d19", "local": ".sources/makepad/apps/task" },
       "module": null,
       "bin": "task",
       "default_features": true,

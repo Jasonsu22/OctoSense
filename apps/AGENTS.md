@@ -45,13 +45,19 @@ app's own agent and `tools.json`, the system toolbox, `glance.publish` and
   `cargo test --locked -p octosense-mail-service`. Calendar's and News's:
   `apps/calendar/host-service`, `apps/news/host-service`, and
   `cargo test --locked -p octosense-calendar-service -p octosense-news-service`.
-  The sheet engine's (gridcraft behind `sheet.*`, ADR 0013, no bundle yet):
-  `apps/sheets/host-service` and `cargo test --locked -p octosense-sheets-service`.
-  The photo engine's (photocraft behind `photo.*`, same ADR, no bundle yet):
+  The sheet engine's (gridcraft behind `sheet.*`, ADR 0013, no bundle yet; in
+  Home too): `apps/sheets/host-service` and
+  `cargo test --locked -p octosense-sheets-service`.
+  The photo engine's (photocraft behind `photo.*`, same ADR, no bundle yet;
+  desktop only, `craft-engines`, weighed per engine):
   `apps/photo/host-service` and `cargo test --locked -p octosense-photo-service`.
-  The word engine's (wordcraft behind `word.*`, same ADR, no bundle yet):
+  The word engine's (wordcraft behind `word.*`, same ADR; its app is Writer,
+  `apps/writer/bundle`, desktop only, whose own `word.*` calls work in its
+  storage; its tests are in apps/README.md):
   `apps/word/host-service` and `cargo test --locked -p octosense-word-service`.
-  The deck engine's (deckcraft behind `deck.*`, same ADR, no bundle yet):
+  The deck engine's (deckcraft behind `deck.*`, same ADR; its app is Quick
+  Deck, `apps/quickdeck/bundle`, desktop only, whose own `deck.*` calls work
+  in its storage; its dev fixture is in apps/README.md):
   `apps/deck/host-service` and `cargo test --locked -p octosense-deck-service`.
   The cad engine's (cadcraft behind `cad.*`, same ADR, no bundle yet):
   `apps/cad/host-service` and `cargo test --locked -p octosense-cad-service`.
@@ -70,8 +76,45 @@ app's own agent and `tools.json`, the system toolbox, `glance.publish` and
   `apps/effect/host-service` and `cargo test --locked -p octosense-effect-service`.
   The vector engine's (vectorcraft behind `vector.*`, same ADR, no bundle yet):
   `apps/vector/host-service` and `cargo test --locked -p octosense-vector-service`.
-  The pdf engine's (pdfcraft behind `pdf.*`, same ADR, no bundle yet):
+  The pdf engine's (pdfcraft behind `pdf.*`, same ADR; PDF Tools,
+  `apps/pdftools/bundle`, is its app, tested end to end in a hidden desktop
+  shell by `apps/pdftools/tests/ui.py` on the sample PDFs its
+  `pdftools_fixture` example writes, see `apps/pdftools/README.md`):
   `apps/pdf/host-service` and `cargo test --locked -p octosense-pdf-service`.
+  Besides the file methods (`info`, `text`, `render`, `merge`, `split`: the
+  system agent's five tools, which stay as they are), it serves PDF Tools
+  v2's open documents to apps' own requests, as
+  `apps/pdftools/design/SERVICE.md` specifies; change that contract and the
+  service together. `pdf.open` keeps the engine's document, its edits and
+  undo history, under a handle; a document belongs to the caller app, its
+  storage scope (the area's root) and the handle, so another app's or
+  scope's handle is `unknown_doc:`, and a caller keeps at most 8 open
+  (`src/docs.rs`). The table is a `thread_local`, because every call reaches
+  the service on the UI thread (App Hub's `services::pump` inline from the
+  card runner, the relay's and components' calls from `host_tools::pump`),
+  which must take no lock another thread can hold. `pdf.close` releases a
+  document, and so does its app closing: a document is bound to the opening
+  isolate, and the service's listener on App Hub's
+  `services::on_isolate_closed` (called from `cancel_heap`, which every host
+  calls for a closing isolate) releases its documents and their renders
+  before the isolate's heap key, an address, can be reused. Every call also
+  sweeps for a changed storage scope (Makepad's
+  `splash_storage::storage_for_heap` for `Replier::isolate_key()`), and a
+  caller with no isolate gets a 15-minute idle bound. Each method runs
+  reviewed engine commands, its
+  review beside it (`src/reading.rs`, `src/review.rs`, `src/change.rs`): the
+  service builds every engine argument itself and each v2 method refuses a
+  key it does not take, so `comment_add` (`file`) never sees its attachment
+  type or a path; `file` commands that write get a staging path inside the
+  storage only; `doc_open` and `form_fill` (`code`) run with JavaScript off,
+  proven by `doc_tests::a_forms_own_scripts_never_run`. Caps: 24–300 dpi and
+  16 MP a render, `find` ≤ 500 matches, 512 pages a call, an image export
+  ≤ 64 pages and 256 MP in all (checked before anything is written), and a
+  render cache in `.cache/pages/` of 16 MiB and 64 files (an app's storage
+  holds at most 256 entries for its own writes), oldest first, cleared
+  before a write would fail with `storage_full:`. `pdf.fields` marks
+  read-only fields, and `pdf.fill` refuses one. Errors start with a stable
+  code (`src/codes.rs`).
 - Declare an app's agent in its manifest and `bundle/tools.json`. Keep the
   input/output schemas consistent with the executor (octos requires an object
   output schema), and select the actual risk, sharing and confirmation policy.
@@ -84,7 +127,9 @@ app's own agent and `tools.json`, the system toolbox, `glance.publish` and
   Mail/News/Photos install `on_notify` callbacks; the shell's `NoticeService`
   serves Maps, YouTube and Camera. The fixed notice template lives in
   `../crates/shell/resources/glance/notice.card`; Calendar keeps its own event
-  and agenda templates. Grant `glance` in the manifest and publish as the app.
+  and agenda templates. Declare `glance` usage in the manifest and publish as
+  the admitted app; preserve publisher/account identity and actual consent.
+  The declaration itself does not grant or deny publication.
 - For richer app-owned cards, use `glance.publish` with either L0 `source` and
   optional `data`, or a Splash `script`. Preserve app attribution, policy and
   the distinction between app UI actions and agent tool calls. See
@@ -163,7 +208,9 @@ caller identity, approval behavior and results at that boundary. Keep UI API
 methods separate from the tools actually declared for the agent: Mail exposes
 account-scoped accounts/folders/sync/list/peek and notify/publish_card; its
 credentials, send and mark-read APIs remain host/UI-only. News exposes list/read/notify; Photos notify and
-info (its `photos` service: `photos.info` on the photo engine, ADR 0013); Maps, YouTube
+info (its `photos` service: `photos.info` on the photo engine, ADR 0013; on
+Home, which leaves that engine out, the shell's notice service answers
+`photos.notify` and `photos.info` is refused as `unavailable`); Maps, YouTube
 and Camera expose notify only. AI providers declares no app agent. The native
 Sheets app declares `sheets.*`, which the shell's engine executor
 (`../crates/shell/src/host_tools/engines.rs`) runs on the sheet engine.
@@ -174,10 +221,11 @@ which each crate's tests load with App Hub's own loader. No app ships them, so
 the shell declares them under a virtual owner `os.<family>` (no bundle, no app
 agent, no Settings row) and runs them on the engine's service as that system
 identity. Only the system agent gets them: `ENGINE_TOOLS` in
-`../crates/shell/src/system_chat/grants.rs` grants every read tool and each
-act tool that only creates new files, never the command doors `vector.run`
-and `effect.run` (held for their own review). No app's agent gets an engine
-tool: none is shareable. An engine works in its caller's own folder (ADR
+`../crates/shell/src/system_chat/grants.rs`. Seven engines (word, deck, cad,
+light, film, effect, vector) offer `<family>.info` and a reviewed command
+door `<family>.run`; sound, design and pdf keep fixed tools (ADR 0013 lists
+each engine's surface). No app's agent gets an engine tool: none is
+shareable. An engine works in its caller's own folder (ADR
 0013, 9 Oct 2026; `../crates/shell/src/host_tools/areas.rs` decides it):
 for the system agent, its workspace, the folder its own file tools see, so
 it hands an engine a file by placing it there and reads the result back.
@@ -192,6 +240,28 @@ light). Change a tool's schema and the service together, keep both schemas
 objects (octos takes no other), and add a new tool to `ENGINE_TOOLS` only
 after reviewing it; the shell's `host_tools` tests run every granted tool
 against its declared result.
+
+A command door is an allowlist, never a deny-list. Its service builds the
+gate from `skill/safety.json` with `octosense_engine_area::door::Door` and
+its own `REVIEWED` settlements (the `file` commands that only read a file
+named in their parameters, the setters and their reviewed keys, the
+commands that name another command or an effect, whose inner id the gate
+checks in turn, and the limits on parameters that multiply work: counts,
+rows and columns, sizes, frame ranges, with copies multiplying across a
+call), admits every command of a call before running any, and fences what
+a command could plant in the document after each one (vector's linked
+images, effect's LUT and colour files, film's media and effect paths,
+photo's linked smart objects). Engine work runs on the shell's UI thread,
+so every door caps what one call may ask for: give a new multiplying
+parameter a `Limit`, with its reason beside it. A command the engine
+cannot yet do safely on hostile data (deck's media and zip parsing, #448)
+is `Held`: the door refuses it, saying why, until the engine is fixed. Only `safe` ids and reviewed reads
+run; an unclassified id fails the skill drift test, and an id the gate does
+not know is refused. Classify a new id from its implementation, never
+widen a class to make a command run, and keep a door's hostile fixtures
+(a batch wrapping a plug-in install, a plug-ins-folder preference, a
+plug-in effect) passing. Engine crate tests are not in CI (#412): run
+`cargo test --locked -p octosense-<family>-service` yourself after a change.
 
 Every engine (sheet and photo too) ships the system agent's skill for it in
 `<family>/host-service/skill/`, embedded by `src/skill.rs`. `SKILL.md` is

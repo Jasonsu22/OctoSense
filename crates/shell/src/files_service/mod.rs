@@ -100,9 +100,6 @@ enum Operation {
 }
 
 impl Operation {
-    fn needs_storage(&self) -> bool {
-        !matches!(self, Self::Share { .. })
-    }
     /// What the native loader may read for this selection: the operation's
     /// own bound, never more than the app's whole storage quota.
     fn selection_limit(&self, quota: u64) -> u64 {
@@ -127,6 +124,33 @@ fn image_mime(bytes: &[u8]) -> Result<&'static str, String> {
         return Ok("image/webp");
     }
     Err("invalid_image: Choose a PNG, JPEG or WebP file; filename and MIME labels are not sufficient".into())
+}
+/// The chosen document's name as the app may show it: the last component
+/// of what the native loader reports, without control characters or the
+/// invisible format characters that can disguise an extension, at most 128
+/// bytes. None when nothing is left, and on Android, whose loader names
+/// every selection "document" (it queries no display name).
+fn display_name(reported: &str) -> Option<String> {
+    if cfg!(target_os = "android") {
+        return None;
+    }
+    let base = reported.rsplit(['/', '\\']).next().unwrap_or("");
+    let cleaned: String = base
+        .chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+        })
+        .collect();
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        return None;
+    }
+    let mut end = cleaned.len().min(128);
+    while !cleaned.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(cleaned[..end].trim_end().to_string())
 }
 fn share_outcome(value: &Value) -> Result<Value, String> {
     match value["outcome"].as_str() {
@@ -204,12 +228,9 @@ fn parse_operation(method: &str, args: &Value) -> Result<Operation, String> {
     Ok(Operation::Export { path, name })
 }
 
-fn admission(app: &str, storage: bool) -> Result<Value, String> {
-    let loaded = crate::host_tools::script_apps::guidance(app)
+fn admission(app: &str, host: &std::path::Path) -> Result<Value, String> {
+    let loaded = crate::host_tools::script_apps::admitted_host(app, host)
         .map_err(|_| "permission_denied: App is no longer admitted")?;
-    if !loaded.families.contains("files") || (storage && !loaded.families.contains("storage")) {
-        return Err("permission_denied: File transfer requires files and storage grants".into());
-    }
     Ok(loaded.manifest)
 }
 
@@ -238,7 +259,7 @@ struct Work {
 impl Work {
     fn authorized(&self) -> Result<(), String> {
         check_authorization(self.reply.is_pending(), self.manifest.as_ref(), || {
-            admission(&self.call.app_id, self.operation.needs_storage())
+            admission(&self.call.app_id, &self.call.host_dir)
         })
     }
     fn storage(&self) -> Result<StorageAccess, String> {
@@ -307,7 +328,7 @@ impl HostService for FilesService {
             ),
         ] {
             methods.push(HostApiMethod::new(format!("files.{method}"), 1, "files", summary, input,
-                json!({"type":"object","required":["cancelled"],"properties":{"cancelled":{"type":"boolean"},"path":{"type":"string"},"bytes":{"type":"integer","minimum":0},"mime":{"enum":["image/png","image/jpeg","image/webp"]}}}))
+                json!({"type":"object","required":["cancelled"],"properties":{"cancelled":{"type":"boolean"},"path":{"type":"string"},"bytes":{"type":"integer","minimum":0},"name":{"type":"string","maxLength":128},"mime":{"enum":["image/png","image/jpeg","image/webp"]}}}))
                 .with_platforms(&["macos","windows","linux","android"]).with_agent_access(AgentAccess::ForegroundOnly));
         }
         methods
@@ -321,14 +342,15 @@ impl HostService for FilesService {
                 return;
             }
             // Status is intentionally nonprompting and does not need storage.
-            reply.send(admission(&call.app_id, false).map(|_| {
+            let heap = reply.isolate_key();
+            reply.send(admission(&call.app_id, &call.host_dir).map(|_| {
                 json!({
                     "import_supported":file_dialogs::native_file_bytes_supported(),
                     "export_supported":file_dialogs::native_file_bytes_supported(),
                     "max_file_bytes":MAX_FILE_BYTES, "max_import_bytes":MAX_IMPORT, "foreground_required":true,
                     "photo_pick_supported":file_dialogs::native_file_bytes_supported(),
                     "text_share_supported":cfg!(target_os="android"), "max_share_text_bytes":MAX_SHARE_TEXT,
-                    "storage_granted":crate::host_tools::script_apps::grants(&call.app_id,"storage")
+                    "storage_granted":splash_storage::storage_for_heap(heap, &call.app_id).is_some()
                 })
             }));
             return;
@@ -449,7 +471,7 @@ pub fn handle_event(cx: &mut Cx, event: &Event) {
                 work.reply.send(Err("foreground_required: Return to this app before choosing or sharing a file".into()));
                 return;
             }
-            work.manifest = match admission(&work.call.app_id, work.operation.needs_storage()) {
+            work.manifest = match admission(&work.call.app_id, &work.call.host_dir) {
                 Ok(m) => Some(m),
                 Err(e) => {
                     work.reply.send(Err(e));
@@ -483,6 +505,7 @@ pub fn handle_event(cx: &mut Cx, event: &Event) {
             let reply = work.reply.clone();
             let app = work.call.app_id.clone();
             let manifest = work.manifest.clone();
+            let host_dir = work.call.host_dir.clone();
             // The native loader can outlive Pending: a provider read already
             // in progress may block even after close/timeout revokes the reply.
             // Keep its one-transfer slot until the guard/worker is dropped.
@@ -494,7 +517,7 @@ pub fn handle_event(cx: &mut Cx, event: &Event) {
                 .set_access_guard(FileDialogAccessGuard::new(move || {
                     let _keep_slot = &reservation;
                     check_authorization(reply.is_pending(), manifest.as_ref(), || {
-                        admission(&app, true)
+                        admission(&app, &host_dir)
                     })
                     .is_ok()
                 }));
@@ -609,6 +632,7 @@ fn complete(cx: &mut Cx, pending: Pending, action: &FileDialogAction) {
             // its current quota.
             let path = path.clone();
             let bytes = file.bytes.clone();
+            let name = display_name(&file.name);
             let snapshot = storage.worker_snapshot();
             let failed = work.reply.clone();
             let submitted = cx.task_pool().submit(Lane::Heavy, move || {
@@ -619,6 +643,9 @@ fn complete(cx: &mut Cx, pending: Pending, action: &FileDialogAction) {
                         let mut value = json!({"cancelled":false,"path":path,"bytes":bytes.len()});
                         if let Some(mime) = mime {
                             value["mime"] = mime.into();
+                        }
+                        if let Some(name) = name {
+                            value["name"] = name.into();
                         }
                         (staged, value)
                     });

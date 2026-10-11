@@ -100,6 +100,40 @@ pub fn card_manifest_id(app: &crate::clients::AppDef) -> Option<&str> {
     app.id.strip_prefix("hub:").or_else(|| app.args.iter().find_map(|a| a.strip_prefix(SYSTEM_ARG)))
 }
 
+/// The size, in points, a script app's manifest asks its desktop window to
+/// open at (App Hub's optional `window`, schema_minor 1), read from the
+/// bundle the Card runner is about to open: a system app's admitted build
+/// (unpacked now if this is its first launch) or an installed app's bundle.
+/// `None` for any other app, and for a manifest that does not ask or does
+/// not parse (the Card runner then refuses it, or opens it as before). The
+/// hint grants nothing; the desk clamps it
+/// (`desktop_layout::preferred_size`).
+#[cfg(any(feature = "app-hub", native_mobile))]
+pub fn window_hint(cx: &mut makepad_widgets::Cx, app: &crate::clients::AppDef) -> Option<(f64, f64)> {
+    window_hint_in(&octosense_app_hub_app::data_root(cx), app)
+}
+
+/// [`window_hint`] under App Hub's apps root `root`, the one the Card runner
+/// opens its apps from.
+#[cfg(any(feature = "app-hub", native_mobile))]
+fn window_hint_in(root: &Path, app: &crate::clients::AppDef) -> Option<(f64, f64)> {
+    let manifest_id = card_manifest_id(app)?;
+    let system = octosense_app_hub_app::system_apps().into_iter().find(|system| system.id == manifest_id);
+    let bundle = match system {
+        Some(system) => octosense_appstore::system::prepare(root, &system).ok()?.0,
+        None => installed_bundle(root, manifest_id),
+    };
+    let text = std::fs::read_to_string(bundle.join(octosense_app_contract::MANIFEST_FILE)).ok()?;
+    let window = octosense_app_contract::AppManifest::parse(&text).ok()?.window?;
+    Some((f64::from(window.width), f64::from(window.height)))
+}
+
+/// Without App Hub there is no script app to ask.
+#[cfg(not(any(feature = "app-hub", native_mobile)))]
+pub fn window_hint(_cx: &mut makepad_widgets::Cx, _app: &crate::clients::AppDef) -> Option<(f64, f64)> {
+    None
+}
+
 /// A system app's launcher row carries its manifest id as this argument.
 const SYSTEM_ARG: &str = "--system=";
 
@@ -202,7 +236,7 @@ pub fn register_mail_services() {
             octosense_mail_service::register()
         }
         // `mail.notify` (Mail's agent's tool): the shell's notice card, as
-        // Mail, only when its manifest was granted `glance`.
+        // Mail, after verifying the publishing app's admission.
         octosense_mail_service::on_notify(Some(std::sync::Arc::new(crate::glance_notice::notify)));
         octosense_mail_service::on_publish_card(Some(std::sync::Arc::new(|app: &str, args: serde_json::Value| crate::glance::publish_mail_l0_for(app, &args))));
         octosense_mail_service::drafts::on_change(Some(std::sync::Arc::new(makepad_widgets::makepad_platform::SignalToUI::set_ui_signal)));
@@ -223,19 +257,18 @@ pub fn register_host_services() {
     register_mail_services();
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
+        // Capability declarations describe intended use. Admission still binds
+        // every call to a verified app and the current host profile.
         crate::ai_host::set_model_grants(|app, host_dir| {
-            crate::host_tools::script_apps::admitted_bundle(app)
-                .and_then(|(root, bundle)| {
-                    if root.join(".host") != host_dir { return Err("Model caller belongs to another app root".into()); }
-                    crate::host_tools::script_apps::from_bundle(&bundle)
-                })
-                .is_ok_and(|bundle| bundle.families.contains("model"))
+            crate::host_tools::script_apps::admitted_host(app, host_dir).is_ok()
         });
-        crate::ai_host::set_model_scope(|app, _| Some(
+        crate::ai_host::contained::set_caller_admitted(|app, host_dir| {
+            crate::host_tools::script_apps::admitted_host(app, host_dir).is_ok()
+        });
+        crate::ai_host::set_model_scope(|app, _| {
             crate::app_storage::lifecycle::contained_account(app)
                 .map(|account| crate::app_storage::account_hash(&account))
-                .unwrap_or_else(|| crate::app_storage::DEVICE.into())
-        ));
+        });
         crate::platform_services::register();
         crate::device_calendar::register(|app| {
             crate::app_storage::lifecycle::contained_account(app)
@@ -243,8 +276,15 @@ pub fn register_host_services() {
         });
         crate::files_service::register();
         crate::audio_service::register();
+        // App Hub admits bundles before the first CardModule is opened. The
+        // linked card runner already supports app tools at that point, so its
+        // ABI must not depend on a card's lazy VM registration.
+        octosense_appstore::register_policy_runtime_features();
+        octosense_appstore::host_api::register_runtime_feature("app_tools.dispatch", 1);
         octosense_appstore::host_api::register_runtime_feature("storage.binary_write", 1);
         octosense_appstore::host_api::register_runtime_feature("video.playback_controls", 1);
+        octosense_appstore::host_api::register_runtime_feature("camera.capture_intent", 1);
+        crate::charts::register_feature();
         octosense_markdown_editor::register();
         crate::connected_review::register();
         octosense_oauth_service::host_inbox::register_with_review_hook(crate::connected_review::sheet);
@@ -256,18 +296,8 @@ pub fn register_host_services() {
         crate::connected_events::start();
         crate::connected_backends::register();
         octosense_oauth_service::host::register(std::sync::Arc::new(|app, provider, scopes| {
-            use octosense_oauth_service::Provider;
-            let granted = |family| crate::host_tools::script_apps::grants(app, family);
-            granted("auth") && scopes.iter().all(|scope| match provider {
-                Provider::Github => scope == "read:user" || granted("github"),
-                Provider::Backend => scope == "app.session",
-                Provider::Google => match scope.as_str() {
-                    "openid" | "email" | "profile" => true,
-                    s if s.starts_with("https://www.googleapis.com/auth/calendar.") => granted("gcalendar"),
-                    s if s.starts_with("https://www.googleapis.com/auth/gmail.") => granted("gmail"),
-                    _ => false,
-                },
-            })
+            crate::host_tools::script_apps::admitted(app)
+                && provider.validate_scopes(&scopes.iter().cloned().collect::<Vec<_>>()).is_ok()
         }));
         // Provider sign-in sheets name the app from its admitted manifest and
         // show GitHub's one-time code in a host-held panel (ADR 0010).
@@ -285,9 +315,9 @@ pub fn register_host_services() {
         register_calendar_services();
         register_news();
         // The sheet engine service (ADR 0013): gridcraft behind `sheet.*`.
-        // With the photo engine it still ships on the phone, where the
-        // native Sheets app's and Photos' agent tools use them; the ten
-        // engines below are desktop only (`craft-engines`).
+        // It ships on the phone too, where the native Sheets app's agent
+        // tools use it (weighed per engine: +3.4 MB stripped on Home); the
+        // photo engine and the ten below are desktop only (`craft-engines`).
         #[cfg(feature = "app-hub")]
         octosense_sheets_service::register();
         // The native Sheets app's agent tools (`sheets.*`) run on that
@@ -295,13 +325,19 @@ pub fn register_host_services() {
         // route them to a bus the Sheets module does not serve.
         #[cfg(feature = "app-hub")]
         crate::host_tools::set_executor("sheets", Some(std::sync::Arc::new(crate::host_tools::engines::EngineExecutor::sheets())));
-        // The photo engine service (ADR 0013): photocraft behind `photo.*`.
-        #[cfg(feature = "app-hub")]
+        // The photo engine service (ADR 0013): photocraft behind `photo.*`,
+        // desktop only (`craft-engines`): weighed per engine, it would add
+        // 26.8 MB stripped to Home.
+        #[cfg(feature = "craft-engines")]
         octosense_photo_service::register();
         // Photos' own namespace service, as Mail's and News's: its agent's
         // `photos.info` on the engine, `photos.notify` on the shell's
         // notice card (so the notice service never stands in for Photos).
-        #[cfg(feature = "app-hub")]
+        // Without the photo engine (Home), the notice service answers
+        // Photos' namespace (`glance_notice::serve_system_apps`):
+        // `photos.notify` works, and `photos.info` says plainly that it is
+        // not available on this device (`script_apps::unlinked_engine`).
+        #[cfg(feature = "craft-engines")]
         {
             octosense_photo_service::register_photos();
             octosense_photo_service::on_notify(Some(std::sync::Arc::new(crate::glance_notice::notify)));
@@ -473,13 +509,14 @@ pub fn agent_apps() -> Vec<AgentApp> {
 }
 
 /// The `octos.*` services script app `app_id`'s manifest declares (`None`:
-/// no such app here). The contained `octos` service grants only these.
+/// no opted-in agent here). The list is disclosure metadata; an admitted,
+/// consented agent exposes the four supported assistant methods independently.
 pub fn declared_octos(app_id: &str) -> Option<std::collections::BTreeSet<String>> {
     script_agent_apps().into_iter().find(|a| a.id == app_id).map(|a| a.octos.into_iter().collect())
 }
 
 fn octos_of(capabilities: &serde_json::Value) -> Vec<String> {
-    capabilities.as_array().into_iter().flatten().filter_map(|c| c.as_str()).filter(|c| c.starts_with("octos.")).map(str::to_string).collect()
+    capabilities.as_array().into_iter().flatten().filter_map(|c| c.as_str()).filter(|c| crate::ai_host::app_peers::OCTOS_SERVICES.contains(c)).map(str::to_string).collect()
 }
 
 #[cfg(any(feature = "app-hub", native_mobile))]
@@ -533,6 +570,7 @@ fn script_agent_apps() -> Vec<AgentApp> {
 pub fn script_agent_app(manifest_path: &Path, id: &str, name: &str) -> Option<AgentApp> {
     let text = std::fs::read_to_string(manifest_path).ok()?;
     let manifest: serde_json::Value = serde_json::from_str(&text).ok()?;
+    if manifest["id"].as_str() != Some(id) { return None; }
     let octos = octos_of(&manifest["capabilities"]);
     let agent_block = manifest.get("agent").is_some_and(serde_json::Value::is_object);
     let declares = !octos.is_empty() || agent_block || bundle_ships_agent(manifest_path.parent()?, &text);
@@ -872,6 +910,53 @@ pub(crate) fn installed_bundle(root: &Path, app_id: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    /// A fresh host must accept a compatible app before either App Hub or
+    /// CardModule creates its first VM. Otherwise installs or cold launches
+    /// fail until another app happens to register the same runtime ABI.
+    #[cfg(any(feature = "app-hub", native_mobile))]
+    #[test]
+    fn cold_host_advertises_the_installed_card_contract() {
+        if crate::module_host::run_with_isolated_module_data(
+            "apps::tests::cold_host_advertises_the_installed_card_contract",
+        ) {
+            return;
+        }
+        let manifest = octosense_app_policy::AppManifest::parse(&serde_json::json!({
+            "schema": 1, "id": "org.example.coldcard", "name": "Cold card", "version": "1.0.0",
+            "integrity": {"bundle_blake3": "0".repeat(64)},
+            "capabilities": [], "requires": ["host-api-v1", "script-tools-v1"],
+            "host_api": {"required": {"app_tools.dispatch": 1, "runtime.describe": 1, "charts.d3": 1}}
+        }).to_string()).unwrap();
+        assert!(octosense_appstore::host_api::check_manifest(&manifest).is_err());
+        register_host_services();
+        octosense_appstore::host_api::check_manifest(&manifest)
+            .expect("compatible card installs and reopens without warming a module first");
+    }
+
+    #[test]
+    fn script_agent_discovery_requires_matching_identity_and_genuine_opt_in() {
+        let root = std::env::temp_dir().join(format!("shell-agent-discovery-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("manifest.json");
+        let app = "org.example.notes";
+        for manifest in [
+            serde_json::json!({"id":app,"capabilities":[],"agent":{}}),
+            serde_json::json!({"id":app,"capabilities":["octos.session.open"]}),
+        ] {
+            std::fs::write(&path, manifest.to_string()).unwrap();
+            assert!(script_agent_app(&path, app, "Notes").is_some());
+            assert!(script_agent_app(&path, "org.example.other", "Other").is_none());
+        }
+        for manifest in [
+            serde_json::json!({"id":app,"capabilities":[],"agent":null}),
+            serde_json::json!({"id":app,"capabilities":["octos.unrestricted"]}),
+        ] {
+            std::fs::write(&path, manifest.to_string()).unwrap();
+            assert!(script_agent_app(&path, app, "Notes").is_none());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// The assistant pane's own process is a registry row (F10 starts it
     /// from there) but no list shows it as an app; the apps people pick
     /// are listed.
@@ -898,6 +983,61 @@ mod tests {
         std::fs::create_dir_all(&current).unwrap();
         assert_eq!(installed_bundle(&root, "dev.example.app"), current, "the new layout wins");
         assert_eq!(installed_bundle(&root, "dev.example.none"), root.join("dev.example.none/bundle"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A script app's manifest `window` is the size its desktop window asks
+    /// for (`window_hint`), read from the bundle the Card runner opens: a
+    /// system app's admitted build, unpacked here as on a first launch, or
+    /// an installed app's bundle. No hint, a manifest App Hub refuses, or an
+    /// app that is not a script app: the default size.
+    #[cfg(feature = "app-hub")]
+    #[test]
+    fn a_script_apps_manifest_window_is_the_size_it_asks_for() {
+        let root = std::env::temp_dir().join(format!("shell-window-hint-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        // A system app, packed by digest as the build packs one.
+        let source = root.join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("main.splash"), "use mod.widgets.*\nApp { Label { text: \"Probe\" } }\n").unwrap();
+        std::fs::write(source.join("manifest.json"), serde_json::json!({
+            "schema": 1, "schema_minor": 1, "id": "os.windowprobe", "version": "1.0.0", "name": "Window probe",
+            "integrity": {"bundle_blake3": ""}, "window": {"width": 900, "height": 700}
+        }).to_string()).unwrap();
+        let packed = octosense_app_hub::pack::pack_system_app(&source).unwrap();
+        test_system_apps::register(octosense_appstore::system::SystemApp {
+            id: "os.windowprobe", name: "Window probe", pack: Box::leak(packed.pack_json.into_boxed_str()), assets: &[],
+        });
+        let probe = card_row("windowprobe".into(), "Window probe".into(), vec![format!("{SYSTEM_ARG}os.windowprobe")]);
+        assert_eq!(window_hint_in(&root, &probe), Some((900.0, 700.0)));
+        assert!(root.join(".system/os.windowprobe").is_dir(), "unpacked as the Card runner unpacks it");
+        // An installed app: its bundle's manifest.
+        let bundle = root.join(".bundles/org.example.wide/bundle");
+        std::fs::create_dir_all(&bundle).unwrap();
+        let installed = card_row(installed_launch_id("org.example.wide"), "Wide".into(), Vec::new());
+        let manifest = |extra: serde_json::Value| {
+            let mut manifest = serde_json::json!({
+                "schema": 1, "id": "org.example.wide", "version": "1.0.0", "name": "Wide",
+                "integrity": {"bundle_blake3": "0".repeat(64)}
+            });
+            manifest.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            std::fs::write(bundle.join("manifest.json"), manifest.to_string()).unwrap();
+        };
+        manifest(serde_json::json!({"schema_minor": 1, "window": {"width": 1200, "height": 800}}));
+        assert_eq!(window_hint_in(&root, &installed), Some((1200.0, 800.0)));
+        manifest(serde_json::json!({}));
+        assert_eq!(window_hint_in(&root, &installed), None, "no hint");
+        manifest(serde_json::json!({"window": {"width": 1200, "height": 800}}));
+        assert_eq!(window_hint_in(&root, &installed), None, "App Hub refuses window below schema_minor 1");
+        let mut native = installed.clone();
+        native.bin = "notes".into();
+        assert_eq!(window_hint_in(&root, &native), None, "not a script app");
+        // The build's own PDF Tools (desktop builds pack it) asks for its
+        // designs' 1536 x 1024, admitted as the Card runner admits it.
+        if system_app_ids().contains(&"pdftools") {
+            let pdftools = card_row("pdftools".into(), "PDF Tools".into(), vec![format!("{SYSTEM_ARG}os.pdftools")]);
+            assert_eq!(window_hint_in(&root, &pdftools), Some((1536.0, 1024.0)));
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
     use super::*;

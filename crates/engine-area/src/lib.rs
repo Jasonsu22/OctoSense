@@ -27,6 +27,8 @@
 //! never races one into place, no write goes through a symbolic link, and
 //! the bytes one call adds stay within its quota.
 
+pub mod door;
+
 use std::collections::HashSet;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -108,6 +110,14 @@ impl Area {
         self.freed.fetch_add(freed, Ordering::Relaxed);
     }
 
+    /// Record `bytes` the call removed from the area outside its own writes
+    /// (a cache of its own it cleared to make room): the quota may use them
+    /// again for the rest of the call. Works through a shared reference, so
+    /// a [`Stage`] borrowing the area sees the room it gives.
+    pub fn credit(&self, bytes: u64) {
+        self.freed.fetch_add(bytes, Ordering::Relaxed);
+    }
+
     /// `path` as the caller names it: relative to the root, never the
     /// host's own spelling of it.
     pub fn shown(&self, path: &Path) -> String {
@@ -117,11 +127,63 @@ impl Area {
         }
     }
 
+    /// `text` with the host's spellings of the root taken out: a path inside
+    /// the area reads relative to it, and the root itself reads `.`. An
+    /// engine can name the absolute path the service opened, in a result
+    /// (pdfcraft's `document.path`) or an error; the person's home directory
+    /// is in it, and the caller works in relative paths anyway.
+    pub fn relative_text(&self, text: &str) -> String {
+        let mut text = text.to_string();
+        for root in self.root_spellings() {
+            if text == root {
+                return ".".into();
+            }
+            for separator in ['/', '\\'] {
+                text = text.replace(&format!("{root}{separator}"), "");
+            }
+        }
+        text
+    }
+
+    /// `value` with [`Area::relative_text`] applied to every string in it:
+    /// what a service's answer may show its caller.
+    pub fn relative_json(&self, value: serde_json::Value) -> serde_json::Value {
+        use serde_json::Value;
+        fn walk(value: Value, area: &Area) -> Value {
+            match value {
+                Value::String(text) => Value::String(area.relative_text(&text)),
+                Value::Array(items) => Value::Array(items.into_iter().map(|item| walk(item, area)).collect()),
+                Value::Object(fields) => Value::Object(fields.into_iter().map(|(key, item)| (key, walk(item, area))).collect()),
+                other => other,
+            }
+        }
+        walk(value, self)
+    }
+
+    /// The root as given and as the filesystem resolves it (macOS: `/var`
+    /// is `/private/var`), the longest first, so a spelling is never cut
+    /// out of a longer one.
+    fn root_spellings(&self) -> Vec<String> {
+        let mut spellings: Vec<String> = std::iter::once(self.root.clone())
+            .chain(self.root.canonicalize().ok())
+            .map(|root| root.display().to_string())
+            .filter(|root| !root.is_empty())
+            .collect();
+        spellings.sort_by_key(|root| std::cmp::Reverse(root.len()));
+        spellings.dedup();
+        spellings
+    }
+
     /// Whether a write of `len` bytes may land at `path` (already contained
     /// in the area): the bytes the entry there holds now, which the write
     /// would free. An existing entry is refused unless the call may replace
     /// it; a folder is never replaced.
     fn admit(&self, path: &Path, len: u64) -> Result<u64, String> {
+        // Contained already; a `..` step would still create the folders
+        // before it and climb out of them, so none is written through.
+        if path.components().any(|c| c == std::path::Component::ParentDir) {
+            return Err(format!("`{}`: a path stays inside this call's folder, with no `..`", self.shown(path)));
+        }
         let replaced = match std::fs::symlink_metadata(path) {
             Ok(meta) => {
                 if !self.may_replace {
@@ -513,6 +575,26 @@ mod tests {
         assert_eq!(Area::new(dir.path(), None, false).room(), None);
     }
 
+    /// What a call removes outside its own writes (a cache it cleared) is
+    /// room again, for a plain write and for a stage that borrows the area.
+    #[test]
+    fn credited_bytes_are_room_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let area = Area::new(dir.path(), Some(4), false);
+        assert!(area.write(&dir.path().join("a"), b"123456").unwrap_err().contains("more than the 4 bytes left"));
+        area.credit(2);
+        assert_eq!(area.room(), Some(6));
+        area.write(&dir.path().join("a"), b"123456").unwrap();
+        assert_eq!(area.room(), Some(0));
+        let stage = area.stage().unwrap();
+        std::fs::write(stage.path("b"), b"12").unwrap();
+        assert!(stage.commit(&[(stage.path("b"), dir.path().join("b"))]).is_err(), "no room yet");
+        area.credit(2);
+        stage.commit(&[(stage.path("b"), dir.path().join("b"))]).unwrap();
+        assert_eq!(area.room(), Some(0));
+        assert_eq!(Area::new(dir.path(), None, false).room(), None, "no quota: nothing to credit");
+    }
+
     #[test]
     fn a_stage_commits_all_or_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -581,5 +663,54 @@ mod tests {
         let area = Area::new("/host/apps/os.notes", None, false);
         assert_eq!(area.shown(Path::new("/host/apps/os.notes/docs/a.docx")), "docs/a.docx");
         assert_eq!(area.shown(Path::new("/elsewhere/b.docx")), "b.docx");
+    }
+
+    #[test]
+    fn answers_and_errors_never_spell_the_host_path_of_the_area() {
+        let area = Area::new("/host/apps/os.notes", None, false);
+        let answer = serde_json::json!({
+            "document": {"path": "/host/apps/os.notes/docs/a.pdf", "pages": 2},
+            "parts": ["/host/apps/os.notes/parts/1.pdf", "/host/apps/os.notes"],
+            "note": "saved /host/apps/os.notes/out.png and /host/apps/os.notes\\win.png",
+            "sibling": "/host/apps/os.notes2/x.pdf",
+            "elsewhere": "/tmp/x.pdf",
+        });
+        assert_eq!(
+            area.relative_json(answer),
+            serde_json::json!({
+                "document": {"path": "docs/a.pdf", "pages": 2},
+                "parts": ["parts/1.pdf", "."],
+                "note": "saved out.png and win.png",
+                "sibling": "/host/apps/os.notes2/x.pdf",
+                "elsewhere": "/tmp/x.pdf",
+            })
+        );
+        assert_eq!(area.relative_text("cannot read /host/apps/os.notes/a.pdf"), "cannot read a.pdf");
+    }
+
+    #[test]
+    fn the_resolved_spelling_of_the_root_is_taken_out_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = dir.path().canonicalize().unwrap();
+        let area = Area::new(dir.path(), None, false);
+        let text = format!("{}/a.pdf and {}/b.pdf", dir.path().display(), resolved.display());
+        assert_eq!(area.relative_text(&text), "a.pdf and b.pdf");
+    }
+
+    /// A write never goes through a `..` step, even on a path a caller
+    /// failed to contain: `missing/../../x` would make `missing` and land
+    /// one level above the area.
+    #[test]
+    fn no_write_goes_through_a_parent_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("area");
+        std::fs::create_dir(&root).unwrap();
+        for may_replace in [false, true] {
+            let area = Area::new(&root, None, may_replace);
+            let climbing = root.join("missing/../../x.txt");
+            assert!(area.write(&climbing, b"x").unwrap_err().contains("no `..`"));
+            assert!(area.check(&climbing, 1).is_err());
+            assert!(!dir.path().join("x.txt").exists() && !root.join("missing").exists());
+        }
     }
 }

@@ -1,6 +1,8 @@
 # 受限应用的文件导入与导出
 [English](README.md) | 简体中文
 
+能力声明说明用途。文件调用需要应用仍通过准入检查；`storage_granted` 表示调用隔离环境是否具有有效的应用存储。原生选择器交互、存储隔离和配额仍然生效。
+
 `files` 将前台应用接入系统文档选择器。导入会将一个所选文档复制到应用已有的
 Splash 文件系统；导出会保存已有应用文件的快照。应用只收到应用内路径和字节数，
 不会得到宿主路径或 Android 内容提供器 URI，也不会创建第二套文件存储。
@@ -8,8 +10,12 @@ Splash 文件系统；导出会保存已有应用文件的快照。应用只收�
 | 方法 | 参数 | 返回值 |
 | --- | --- | --- |
 | `files.status` | `{}` | `import_supported`、`export_supported`、`storage_granted`、`max_file_bytes`、`max_import_bytes`、`foreground_required` |
-| `files.import` | `{"path":"/documents/report.pdf"}` | `{"cancelled":false,"path":"/documents/report.pdf","bytes":123}` |
+| `files.import` | `{"path":"/documents/report.pdf"}` | `{"cancelled":false,"path":"/documents/report.pdf","bytes":123,"name":"Q3 report.pdf"}` |
 | `files.export` | `{"path":"/documents/report.pdf","name":"Report.pdf"}` | 相同的成功字段；可选的 `name` 是建议给系统对话框的文件名，不含目录 |
+
+`name` 是所选文档的显示名称，供应用展示：去掉文件夹、控制字符和不可见的方向标记后的
+文件名，最多 128 字节。副本仍存放在应用指定的 `path`。清理后为空时不返回；Android 的
+文档加载器暂不查询显示名称，因此 Android 上也不返回。
 
 取消选择返回 `{"cancelled":true}`。读取失败、不支持的平台、缺少授权、存储已满和
 传输忙碌都会返回错误。导入目标必须是新文件，不能覆盖应用已有文档。应用可用
@@ -54,7 +60,9 @@ qarma、matedialog 或 kdialog。不支持时状态返回 false，发现接口�
 集成点：在 `apps.rs` 的平台服务注册旁调用 `files_service::register()`；在
 `lib.rs` 的平台事件处理旁调用 `files_service::handle_event(cx, event)`，并保持
 在 App Hub 服务互斥锁外执行。将原生音频使用的宿主焦点应用或展开 Glance 归属
-同时传给 `files_service::set_foreground_app`。App Hub 合约需要认识 `files` 并提供
+同时传给 `files_service::set_foreground_app`：即焦点窗口的脚本应用清单 ID
+（`ClientSlot::foreground_app`，在窗口打开时记录），系统应用的 `os.<name>`
+与已安装应用自己的 ID 同样有效。App Hub 合约需要认识 `files` 并提供
 `Replier::isolate_key`；Makepad 需要包含对应的存储和选择器适配器。
 运行时可为原生 `fs.write_bytes` 声明 `storage.binary_write@1` 特性。
 

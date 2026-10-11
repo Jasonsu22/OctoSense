@@ -23,6 +23,7 @@ pub mod approvals;
 pub mod apps;
 pub mod binds;
 pub mod clients;
+pub mod charts;
 pub mod demo_home;
 pub mod desk;
 pub mod desktop_layout;
@@ -39,6 +40,7 @@ pub mod mobile_back;
 pub mod mobile_tiles;
 pub mod mobile_shade;
 pub mod mobile_pages;
+mod mobile_motion;
 pub mod mobile_island;
 pub mod mobile_octopus;
 pub mod mobile_groups;
@@ -72,7 +74,11 @@ mod module_resize_tests;
 #[cfg(test)]
 mod maps_model_tests;
 #[cfg(test)]
+mod pdftools_model_tests;
+#[cfg(test)]
 mod system_app_theme_tests;
+#[cfg(test)]
+mod writer_model_tests;
 pub mod module_view;
 pub mod native_apps;
 pub mod sandbox;
@@ -728,6 +734,16 @@ impl App {
 
     pub fn state_mut(&mut self) -> &mut WmState {
         self.state.as_mut().expect("state after startup")
+    }
+
+    /// How many points of the work area `area`'s bottom the dock covers
+    /// (`desktop::dock_overlay`): a window that asks for its own size ends
+    /// above it. Before the desk's first draw, on `desk_area`'s fallback
+    /// desk, 860 points tall from the window's top.
+    fn dock_overlay(&self, cx: &mut Cx, area: LRect) -> f64 {
+        let rect = self.desk(cx).borrow_mut::<WmDesk>().map(|d| d.desk_rect).unwrap_or_default();
+        let desk_bottom = if rect.size.x > 1.0 { rect.pos.y + rect.size.y } else { 860.0 };
+        self.state.as_ref().map_or(0.0, |s| desktop::dock_overlay(&s.style, desk_bottom, area.y + area.h))
     }
 
     fn desk_area(&self, cx: &mut Cx) -> LRect {
@@ -2621,11 +2637,23 @@ impl App {
             Some(instance) => (instance.manifest(), instance.root.clone(), instance.vm_id),
             None => return,
         };
-        self.state_mut()
-            .clients
-            .insert(id, clients::ClientSlot::module(id, &app.id, &app.label));
+        let mut slot = clients::ClientSlot::module(id, &app.id, &app.label);
+        // Host services know a script app in front by its manifest id.
+        slot.card_app = apps::card_manifest_id(app).map(str::to_owned);
+        self.state_mut().clients.insert(id, slot);
         let gap = self.state_mut().gap;
-        self.state_mut().layout.insert(id, area, gap);
+        // A script app may ask its desktop window to open at a size (its
+        // manifest's `window`), which the desk clamps; without one, or for
+        // any other module, the default size. Phones ignore it: their apps
+        // are full-screen.
+        // It ends above a dock that floats over the desk.
+        let preferred = if self.state_mut().style.target.mobile() { None } else { apps::window_hint(cx, app) };
+        let dock = if preferred.is_some() { self.dock_overlay(cx, area) } else { 0.0 };
+        self.state_mut().layout.insert_sized(id, area, gap, preferred, dock);
+        if let (Some((w, h)), Some(window)) = (preferred, self.state_mut().layout.desktop.get(id)) {
+            log!("wm: {} asks for a {}x{} window; it opens at {}x{} (the dock covers {} points of the desk)",
+                app.id, w, h, window.rect.w, window.rect.h, dock);
+        }
         // The tile is a module tile from its first draw; the root is seated
         // in it before anything asks it to draw.
         self.desk(cx).borrow_mut::<WmDesk>().map(|mut d| {
@@ -2822,7 +2850,10 @@ impl App {
                     let id = self.next_id;
                     self.next_id += 1;
                     let area = self.desk_area(cx);
-                    self.state_mut().clients.insert(id, clients::ClientSlot::module(id, app, &title));
+                    let mut slot = clients::ClientSlot::module(id, app, &title);
+                    // An instance's extra window is its app in front too.
+                    slot.card_app = self.state.as_ref().and_then(|s| s.clients.get(&owner)).and_then(|o| o.card_app.clone());
+                    self.state_mut().clients.insert(id, slot);
                     let gap = self.state_mut().gap;
                     self.state_mut().layout.insert(id, area, gap);
                     self.desk(cx).borrow_mut::<WmDesk>().map(|mut d| {
@@ -4531,6 +4562,9 @@ impl App {
         // ~0.5s hiccups in every child app). A background thread samples
         // and we only copy its cache here.
         if self.status_rx.is_none() {
+            // Before the first script app reads the time: the worker keeps it
+            // current from its first round on.
+            shell::bar::refresh_script_utc_offset();
             match shell::bar::start_status_sampler(&cx.thread_spawner()) {
                 Ok((rx, worker)) => {
                     self.status_rx = Some(rx);
@@ -4957,17 +4991,18 @@ impl App {
             let rect = if resize {
                 // The grabbed corner moves with the pointer; the opposite
                 // one is fixed (DragController.cpp:413-423).
+                use crate::desktop_layout::{MIN_H, MIN_W};
                 let (x, w) = if !resize_x {(start_rect.x,start_rect.w)}else if grab_left {
-                    let w = (start_rect.w - d.x).max(80.0);
+                    let w = (start_rect.w - d.x).max(MIN_W);
                     (start_rect.x + start_rect.w - w, w)
                 } else {
-                    (start_rect.x, (start_rect.w + d.x).max(80.0))
+                    (start_rect.x, (start_rect.w + d.x).max(MIN_W))
                 };
                 let (y, h) = if !resize_y {(start_rect.y,start_rect.h)}else if grab_top {
-                    let h = (start_rect.h - d.y).max(60.0);
+                    let h = (start_rect.h - d.y).max(MIN_H);
                     (start_rect.y + start_rect.h - h, h)
                 } else {
-                    (start_rect.y, (start_rect.h + d.y).max(60.0))
+                    (start_rect.y, (start_rect.h + d.y).max(MIN_H))
                 };
                 LRect::new(x, y, w, h)
             } else {
@@ -6321,6 +6356,9 @@ impl MatchEvent for App {
                 self.installed_app_changed(cx, &id);
                 // Its tools, grants and kernel tools, as installed (ADR 0004 §7).
                 host_tools::script_app_installed(&id);
+                // Its own functions, compiled before its first call (ADR 0014).
+                #[cfg(wasm_functions)]
+                wasm_service::warm(&id);
             }
             self.drain_hub(cx);
             self.drain_client_lines(cx);
@@ -6338,6 +6376,7 @@ impl App {
         host::set_child_env("MAKEPAD_HOME", octosense::paths::home().as_os_str());
         desktop_style::install(vm,desktop_style::StyleSheet::load(desktop_style::DesktopStyle::Omarchy));
         crate::makepad_widgets::script_mod(vm);
+        charts::register(vm);
         octosense::icon_frame::script_mod(vm);
 
         // The theme: evaluated before any module that reads
@@ -6479,10 +6518,9 @@ impl App {
             } else {
                 state.layout.focused_client()?
             };
-            let app = &state.clients.get(&client)?.app;
-            // Hosted Hub previews have no dedicated client identity. They
-            // must open the installed app before requesting native audio.
-            app.strip_prefix("hub:").map(str::to_owned)
+            // A system app in front is its manifest id as much as an
+            // installed one; a hosted Hub preview is none (`foreground_app`).
+            state.clients.get(&client)?.foreground_app()
         });
         let foreground = glance.or(focused);
         files_service::set_foreground_app(foreground.clone());

@@ -34,6 +34,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod cache;
+pub mod component;
+
 use sha2::{Digest, Sha256};
 use wasmtime::{
     Caller, Config, Engine, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, Trap,
@@ -54,6 +57,9 @@ const LOG_LINES: usize = 64;
 pub struct Limits {
     /// How long one call may run.
     pub deadline: Duration,
+    /// How long one call may run when it may wait for the network (a
+    /// component that imports `wasi:http`).
+    pub network_deadline: Duration,
     /// The most linear memory an instance may have.
     pub memory_bytes: usize,
     /// The most elements in an instance's single table (including growth).
@@ -70,6 +76,7 @@ impl Default for Limits {
     fn default() -> Self {
         Limits {
             deadline: Duration::from_secs(2),
+            network_deadline: Duration::from_secs(10),
             memory_bytes: 256 << 20,
             table_elements: 16_384,
             module_bytes: 8 << 20,
@@ -148,6 +155,7 @@ pub struct Runtime {
     engine: Engine,
     limits: Limits,
     cache_dir: Option<PathBuf>,
+    cache_readers: Arc<cache::Readers>,
     ticker: Arc<Ticker>,
 }
 
@@ -210,19 +218,39 @@ impl Runtime {
     pub fn new(limits: Limits, cache_dir: Option<PathBuf>) -> Result<Runtime, String> {
         let mut config = Config::new();
         config.epoch_interruption(true);
+        // Components (ADR 0014) share the engine, its epoch and its cache.
+        config.wasm_component_model(true);
         config.max_wasm_stack(limits.stack_bytes);
+        if Runtime::interpreted() {
+            config
+                .target("pulley64")
+                .map_err(|e| format!("Pulley: {e:#}"))?;
+        }
         let engine = Engine::new(&config).map_err(|e| format!("{e:#}"))?;
         let ticker = Arc::new(Ticker::start(engine.clone()));
         Ok(Runtime {
             engine,
             limits,
             cache_dir,
+            cache_readers: cache::Readers::shared(),
             ticker,
         })
     }
 
     pub fn limits(&self) -> &Limits {
         &self.limits
+    }
+
+    /// Whether code runs in Pulley, Wasmtime's interpreter, rather than as
+    /// native code Cranelift generates (ADR 0014 phase 3): on iOS, where an
+    /// app may not generate code, and on OpenHarmony, until its policy is
+    /// known. With the `pulley` feature, `OCTOSENSE_WASM_PULLEY` selects it
+    /// on any host, so that its tests run anywhere. Cranelift then compiles
+    /// to Pulley's bytecode, and the cache keeps it apart (the engine's
+    /// compatibility hash differs).
+    pub fn interpreted() -> bool {
+        cfg!(any(target_os = "ios", target_env = "ohos"))
+            || (cfg!(feature = "pulley") && std::env::var_os("OCTOSENSE_WASM_PULLEY").is_some())
     }
 
     /// Checks and compiles `bytes`, or takes its compiled code from the cache.
@@ -232,18 +260,21 @@ impl Runtime {
         }
         let cached = self.cache_path(bytes);
         let mut from_cache = false;
-        let module = match cached.as_ref().and_then(|path| std::fs::read(path).ok()) {
+        let module = match self.read_cache(cached.as_ref()) {
             // SAFETY: the cache holds only what `Module::serialize` wrote for
             // this engine (the key includes its compatibility hash), in a
             // directory that belongs to the shell.
-            Some(code) => match unsafe { Module::deserialize(&self.engine, &code) } {
-                Ok(module) => {
-                    from_cache = true;
-                    module
+            cache::ReadResult::Hit(code) => {
+                match unsafe { Module::deserialize(&self.engine, &code) } {
+                    Ok(module) => {
+                        from_cache = true;
+                        module
+                    }
+                    Err(_) => self.compile(bytes, cached.as_ref())?,
                 }
-                Err(_) => self.compile(bytes, cached.as_ref())?,
-            },
-            None => self.compile(bytes, cached.as_ref())?,
+            }
+            cache::ReadResult::Missing => self.compile(bytes, cached.as_ref())?,
+            cache::ReadResult::Unavailable => self.compile(bytes, None)?,
         };
         let functions = check(&module)?;
         Ok(Program {
@@ -253,6 +284,19 @@ impl Runtime {
         })
     }
 
+    /// Compiles `bytes`, a module or a component, into the cache unless it
+    /// is there already; whether it compiled. An app's install calls this so
+    /// that its first call loads from the cache instead of waiting for
+    /// Cranelift (ADR 0014 phase 3). Without a cache it only checks.
+    pub fn precompile(&self, bytes: &[u8]) -> Result<bool, LoadError> {
+        if component::is_component(bytes) {
+            self.load_component(bytes)
+                .map(|program| !program.from_cache())
+        } else {
+            self.load(bytes).map(|program| !program.from_cache())
+        }
+    }
+
     fn compile(&self, bytes: &[u8], cache: Option<&PathBuf>) -> Result<Module, LoadError> {
         let module =
             Module::new(&self.engine, bytes).map_err(|e| LoadError::Invalid(format!("{e:#}")))?;
@@ -260,43 +304,49 @@ impl Runtime {
             // Check before caching: a refused module is never stored.
             check(&module)?;
             if let Ok(code) = module.serialize() {
-                // Different apps may compile identical bytes concurrently.
-                // Never truncate another worker's staging file: deserialization
-                // is only safe for complete, unmodified serialized modules.
-                static NEXT_CACHE_WRITE: AtomicU64 = AtomicU64::new(0);
-                let tmp = path.with_extension(format!(
-                    "{}-{}.tmp",
-                    std::process::id(),
-                    NEXT_CACHE_WRITE.fetch_add(1, Ordering::Relaxed)
-                ));
-                let published = (|| -> std::io::Result<()> {
-                    let mut file = std::fs::OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .open(&tmp)?;
-                    file.write_all(&code)?;
-                    drop(file);
-                    std::fs::rename(&tmp, path)
-                })();
-                if published.is_ok() {
-                    // Read it back off this thread: an on-access scanner
-                    // (Microsoft Defender's, on a managed Mac) holds the
-                    // first open of a new file for about a second, so let
-                    // that happen now rather than at the next load.
-                    let path = path.clone();
-                    let _ = std::thread::Builder::new()
-                        .name("wasm-cache".into())
-                        .spawn(move || drop(std::fs::read(path)));
-                }
-                let _ = std::fs::remove_file(tmp);
+                self.publish_cache(path, &code);
             }
         }
         Ok(module)
     }
 
+    /// Writes compiled code to the cache atomically.
+    fn publish_cache(&self, path: &PathBuf, code: &[u8]) {
+        let Some(dir) = path.parent() else { return };
+        if std::fs::create_dir_all(dir).is_err() {
+            return;
+        }
+        // Different apps may compile identical bytes concurrently. Never
+        // truncate another worker's staging file: deserialization is safe
+        // only for complete, unmodified serialized modules.
+        static NEXT_CACHE_WRITE: AtomicU64 = AtomicU64::new(0);
+        let tmp = path.with_extension(format!(
+            "{}-{}.tmp",
+            std::process::id(),
+            NEXT_CACHE_WRITE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = (|| -> std::io::Result<()> {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?;
+            file.write_all(code)?;
+            drop(file);
+            std::fs::rename(&tmp, path)
+        })();
+        // No detached warm-up reads: every cache read shares the bounded gate.
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    fn read_cache(&self, path: Option<&PathBuf>) -> cache::ReadResult {
+        match path {
+            Some(path) => self.cache_readers.read(path.clone()),
+            None => cache::ReadResult::Unavailable,
+        }
+    }
+
     fn cache_path(&self, bytes: &[u8]) -> Option<PathBuf> {
         let dir = self.cache_dir.as_ref()?;
-        std::fs::create_dir_all(dir).ok()?;
         let mut engine = std::collections::hash_map::DefaultHasher::new();
         self.engine
             .precompile_compatibility_hash()
