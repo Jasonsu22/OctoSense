@@ -931,6 +931,12 @@ mod tests {
         register_host_services();
         octosense_appstore::host_api::check_manifest(&manifest)
             .expect("compatible card installs and reopens without warming a module first");
+        #[cfg(wasm_functions)]
+        assert_eq!(
+            octosense_appstore::host_api::available_versions().get("wasm.sockets"),
+            Some(&1),
+            "socket components must be installable before the first app calls wasm"
+        );
     }
 
     #[test]
