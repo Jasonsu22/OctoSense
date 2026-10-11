@@ -21,7 +21,7 @@ the first component app installed from the official public catalog: its
 [public-store acceptance](https://github.com/ymote/octosense-repo-radar/blob/main/review/acceptance-public-store-0.1.2.json) passed 93 native checks covering
 live GitHub requests from the component, native charts and
 component-owned state across a restart. [Desktop RC6](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.6) keeps all of
-this and adds sockets ([below](#the-service)). [Desktop RC4](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.4)
+this and adds sockets ([below](#components)). [Desktop RC4](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.4)
 at `9266b008` brought the component runtime; its [archive evidence](../tools/fixtures/wasm-phone-lab/README.md#rc4-release-evidence)
 records the actual package, signing and acceptance boundaries.
 The isolated phone fixtures did not update installed Home.
