@@ -49,7 +49,7 @@ use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use octosense_appstore::makepad_widgets::splash_storage::{self, StorageAccess};
@@ -107,7 +107,15 @@ pub(crate) struct OpenDoc {
     pub sizes: Vec<[f64; 2]>,
     /// Renders in the cache, by (page, dpi).
     pub renders: HashMap<(u64, u32), Rendered>,
+    /// The comments' dates as the file writes them (`review.rs`), with the
+    /// working bytes they were read from: the engine swaps those on every
+    /// edit, undo, redo and save, so a version of the document is read once.
+    pub dates: Option<(Weak<Vec<u8>>, WrittenDates)>,
 }
+
+/// Each comment's and reply's date as the file writes it, by its 1-based page
+/// and its 1-based place in the page's `/Annots`.
+pub(crate) type WrittenDates = HashMap<(u64, u64), String>;
 
 impl OpenDoc {
     /// `extra` with this document's engine id: the arguments of a command
@@ -282,6 +290,13 @@ pub(crate) fn open_count() -> usize {
     DOCS.with(|docs| docs.borrow().open.len())
 }
 
+/// Run `f` on the open document whose handle is `handle`, if there is one,
+/// to look into the engine's copy of it (tests).
+#[cfg(test)]
+pub(crate) fn with_open<T>(handle: &str, f: impl FnOnce(&OpenDoc) -> T) -> Option<T> {
+    DOCS.with(|docs| docs.borrow().open.iter().find(|d| d.handle == handle).map(f))
+}
+
 /// Run `f` while a call holds the table, as a listener reached from inside
 /// one would find it (tests).
 #[cfg(test)]
@@ -371,6 +386,7 @@ pub(crate) fn open(a: &Json, cx: &Ctx) -> Result<Json, String> {
         generation: 0,
         sizes,
         renders: HashMap::new(),
+        dates: None,
     };
     let open: Vec<String> = DOCS.with(|docs| {
         let mut docs = docs.borrow_mut();

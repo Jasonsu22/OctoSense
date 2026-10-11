@@ -110,9 +110,15 @@ app's own agent and `tools.json`, the system toolbox, `glance.publish` and
   proven by `doc_tests::a_forms_own_scripts_never_run`. Caps: 24–300 dpi and
   16 MP a render, `find` ≤ 500 matches, 512 pages a call, an image export
   ≤ 64 pages and 256 MP in all (checked before anything is written), and a
-  render cache in `.cache/pages/` of 16 MiB and 64 files (an app's storage
-  holds at most 256 entries for its own writes), oldest first, cleared
-  before a write would fail with `storage_full:`. `pdf.fields` marks
+  render cache of 16 MiB and 64 files (an app's storage holds at most 256
+  entries for its own writes): page renders in `.cache/pages/`, and, from
+  `pdf.cover` (a file method for apps, no agent tool), each PDF's first page
+  in `.cache/covers/`, at most 32 of them, kept across closes and runs and
+  named by the file's name, size and modification time (`src/covers.rs`).
+  Page renders go before covers, each oldest first, and the whole cache is
+  cleared before a write would fail with `storage_full:`. `pdf.comments`
+  reads each date with its zone from the file once per version of the
+  document (`src/review.rs`). `pdf.fields` marks
   read-only fields, and `pdf.fill` refuses one. Errors start with a stable
   code (`src/codes.rs`).
 - Declare an app's agent in its manifest and `bundle/tools.json`. Keep the
