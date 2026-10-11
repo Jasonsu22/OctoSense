@@ -446,6 +446,23 @@ def range_fields(app):
                   key=lambda w: w["r"][1])
 
 
+def open_add_list(app, names=("Board minutes.pdf", "Field guide.pdf", "Apartment lease.pdf")):
+    """Combine's Add files, tapped until its list of PDFs shows: a tap that
+    lands while the card is drawn again is lost (seen once in a dark pass),
+    and a second tap on an open list would close it, so it is tapped again
+    only while no PDF of the list shows."""
+    def shown():
+        return any(w["ty"] == "Label" and w.get("t") in names for w in app.widgets())
+    for attempt in range(3):
+        app.tap("Add files", "Label")
+        try:
+            wait_until(shown, "the list of PDFs to add did not open", timeout=5)
+            return
+        except AssertionError:
+            if attempt == 2:
+                raise
+
+
 def range_field_of(app, name, timeout=15.0):
     """The page-range field in `name`'s row of the Combine card (the list may
     have scrolled the other rows away), once the card shows it: just after
@@ -918,7 +935,7 @@ def shell_journey(app, out, dark):
     app.grab(out, f"{p}05b-undone")
 
     app.tap("Combine", "Button")
-    app.tap("Add files", "Label")
+    open_add_list(app)
     app.reveal("Board minutes.pdf")  # the list may scroll inside the card
     app.tap("Board minutes.pdf", "Label")
     app.reveal("Board minutes.pdf")  # its row now
