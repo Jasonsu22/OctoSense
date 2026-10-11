@@ -29,8 +29,9 @@ app's own agent and `tools.json`, the system toolbox, `glance.publish` and
   --system` (add `MAKEPAD_REMOTE=<port>` to drive it over HTTP; Photos also
   takes `--static photos=<dir>`). `--system` lets an `os.*` id and an empty
   digest through, as the shell does. These flags are on App Hub `main`.
-  `card-host` registers no host services: run Mail in a shell with
-  `MAKEPAD_APP_CONFIG='{"mail_demo":true}'`.
+  `card-host` registers no host services: run Mail in a development build
+  of a shell (debug, or `--features dev-mode`) with
+  `MAKEPAD_APP_CONFIG='{"mail_demo":true}'`; a release build ignores it.
 - Validate on a phone through Home (`phone/`) built as a separate test
   package; never replace the device's installed Home.
 - Text on a page follows the host's appearance. On a phone, a page drawn by a

@@ -124,7 +124,7 @@ App Hub 的模块没有进程形态，总是在进程内打开。
 | `OCTOSENSE_APP_DATA` | App Hub 保存已安装应用的位置（默认为平台数据目录下的 `apps/`）。 |
 | `OCTOSENSE_HUB`、`OCTOSENSE_HUB_ANCHOR` | App Hub 目录来源（路径或 URL）和信任锚；默认是 App Hub 仓库的 `main`。 |
 | `OCTOSENSE_SYSTEM_APPS` | 系统应用选择文件；根目录的 `.cargo/config.toml` 把它设为 `desktop/system-apps.json`。 |
-| `MAKEPAD_APP_CONFIG='{"mail_demo":true}'` | 提供邮件的演示邮箱（见[演示](#演示)）。 |
+| `MAKEPAD_APP_CONFIG='{"mail_demo":true}'` | 提供邮件的演示邮箱（见[演示](#演示)）；与整个 `MAKEPAD_APP_CONFIG` 一样仅限开发版（调试构建或 `--features dev-mode`，见 [`launch_input.rs`](../crates/shell/src/launch_input.rs)）。 |
 | `OCTOSENSE_MAIL_VAULT=file` | 把邮件密码保存在权限为 0600 的文件中，而不是 macOS 钥匙串。 |
 | `OCTOSENSE_LLM_VAULT=file` | 把 AI 提供商的密钥保存在仅所有者可读的 octos profile 中，而不是 macOS 钥匙串。 |
 | `OCTOS_APP_CORE_BIN`、`OCTOS_APP_CORE_DIR` | Shell 内核服务运行的 octos 内核二进制，不做检查（未设置：使用随附的 `octos-kernel`，见[构建与运行](#构建与运行)）及其 core 目录（默认 `~/octos-home/.octos`；AI 提供商的 profile 为 `<dir>/profiles/_main.json`）。 |
@@ -348,10 +348,10 @@ cargo run --release -p octosense --features app-appcard -- --module appcard
 ### 无账户试用邮件
 
 ```sh
-MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense
+MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense --features dev-mode
 ```
 
-打开 **Mail**，在宿主面板上用任意地址和密码 `demo` 登录。演示模式从文件保险库提供示例邮件：不联网，不用钥匙串。
+打开 **Mail**，在宿主面板上用任意地址和密码 `demo` 登录。演示模式从文件保险库提供示例邮件：不联网，不用钥匙串。只有开发版读取 `MAKEPAD_APP_CONFIG`，所以要加 `--features dev-mode`（这一改动后**未验证**；调试构建的 `cargo run` 效果相同）。
 
 在未签名的开发构建上使用真实账户时，每次重新构建后 macOS 都会再次请求钥匙串访问权限。开发时可以改用文件保存密码：
 
