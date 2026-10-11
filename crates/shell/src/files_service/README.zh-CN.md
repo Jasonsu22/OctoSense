@@ -9,7 +9,7 @@ Splash 文件系统；导出会保存已有应用文件的快照。应用只收�
 
 | 方法 | 参数 | 返回值 |
 | --- | --- | --- |
-| `files.status` | `{}` | `import_supported`、`export_supported`、`storage_granted`、`max_file_bytes`、`max_import_bytes`、`foreground_required`；有可用存储时另有 `used_bytes`、`quota_bytes` |
+| `files.status` | `{}` | `import_supported`、`export_supported`、`photo_pick_supported`、`text_share_supported`、`storage_granted`、`max_file_bytes`、`max_import_bytes`、`max_share_text_bytes`、`foreground_required`；有可用存储时另有 `used_bytes`、`quota_bytes` |
 | `files.import` | `{"path":"/documents/report.pdf"}` | `{"cancelled":false,"path":"/documents/report.pdf","bytes":123,"name":"Q3 report.pdf"}` |
 | `files.export` | `{"path":"/documents/report.pdf","name":"Report.pdf"}` | 相同的成功字段；可选的 `name` 是建议给系统对话框的文件名，不含目录 |
 
