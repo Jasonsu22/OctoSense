@@ -40,19 +40,27 @@
 //! nothing, and the session it comes from is borrowed, not called. One pass
 //! over the page tree and the comments, the cost of the engine's own
 //! listing (the engine's per-comment `comment_props` walks the page tree for
-//! each comment). A date is used only where it is the one the engine
-//! listed for that page and place; otherwise, or if the read fails, the
-//! listed wall clock stands, taken as written.
+//! each comment), once per version of the document: the dates are kept on
+//! the open document with a weak reference to the working bytes they came
+//! from, which the engine swaps for new ones on every edit, undo, redo and
+//! save. The reference keeps those bytes' address from being reused, not the
+//! bytes, so a kept read can only match the version it was read from. A
+//! date is used only where it is the one the engine listed for that page
+//! and place; otherwise, or if the read fails, the listed wall clock
+//! stands, taken as written.
 
 use std::collections::{BTreeSet, HashMap};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::{Arc, Weak};
+#[cfg(test)]
+use std::cell::Cell;
 
 use serde_json::{json, Value as Json};
 
 use crate::args::{self, xywh};
 use crate::codes::{self, invalid};
 use crate::dates;
-use crate::docs::{self, OpenDoc};
+use crate::docs::{self, OpenDoc, WrittenDates};
 use crate::Ctx;
 
 /// The comment types `pdf.comment add` makes (SERVICE.md).
@@ -124,17 +132,46 @@ fn pretty_date(written: &str) -> String {
 
 /// Every comment's and reply's date as the file writes it (`/M`), by its
 /// 1-based page and its 1-based place in the page's `/Annots` (as the
-/// engine's `comment_list` gives `page` and `index`): read with the
-/// engine's own comment reader over the open document's working bytes, the
-/// reviewed read-only route of the module doc. Empty if the document cannot
-/// be read so (the engine holds no editor for it either, or a reader
-/// fails); a reader's panic stays here.
-fn written_dates(doc: &OpenDoc) -> HashMap<(u64, u64), String> {
+/// engine's `comment_list` gives `page` and `index`), for the document as it
+/// is now: read once per version of it (the module doc), and kept on it.
+fn written_dates(doc: &mut OpenDoc) -> &WrittenDates {
     let id = doc.id;
-    let Some(working) = doc.engine.session().docs().iter().find(|d| d.id.0 == id) else { return HashMap::new() };
-    let (bytes, password) = (working.bytes.clone(), working.password.clone());
+    let working = doc.engine.session().docs().iter().find(|d| d.id.0 == id).map(|d| (d.bytes.clone(), d.password.clone()));
+    let kept = match (&doc.dates, &working) {
+        (Some((seen, _)), Some((bytes, _))) => Weak::ptr_eq(seen, &Arc::downgrade(bytes)),
+        _ => false,
+    };
+    if !kept {
+        let dates = match &working {
+            Some((bytes, password)) => read_dates(bytes.clone(), password.as_deref()),
+            None => HashMap::new(),
+        };
+        doc.dates = Some((working.as_ref().map(|(bytes, _)| Arc::downgrade(bytes)).unwrap_or_default(), dates));
+    }
+    &doc.dates.get_or_insert_with(Default::default).1
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread read a document's dates (tests).
+    static READS: Cell<u32> = const { Cell::new(0) };
+}
+
+/// How many times this thread read a document's dates (tests).
+#[cfg(test)]
+pub(crate) fn date_reads() -> u32 {
+    READS.with(Cell::get)
+}
+
+/// The dates of `bytes`, read with the engine's own comment reader: the
+/// reviewed read-only route of the module doc. Empty if the document cannot
+/// be read so (the engine holds no editor for it either, or a reader fails);
+/// a reader's panic stays here.
+fn read_dates(bytes: Arc<Vec<u8>>, password: Option<&str>) -> WrittenDates {
+    #[cfg(test)]
+    READS.with(|n| n.set(n.get() + 1));
     catch_unwind(AssertUnwindSafe(|| {
-        let Ok(cos) = pdfcraft_cos::Document::open_with_password(bytes, password.as_deref()) else { return HashMap::new() };
+        let Ok(cos) = pdfcraft_cos::Document::open_with_password(bytes, password) else { return HashMap::new() };
         pdfcraft_annot::summaries(&cos).into_iter().filter_map(|s| Some(((s.page as u64 + 1, s.index as u64 + 1), s.modified?))).collect()
     }))
     .unwrap_or_default()

@@ -1195,6 +1195,71 @@ fn the_render_cache_never_follows_a_link() {
     assert_eq!(std::fs::read_dir(w.root.join("accounts/device/library")).unwrap().count(), 1);
 }
 
+/// `pdf.comments` reads the file's dates once per version of the document:
+/// a second call with no change reads nothing again, and an edit, an undo, a
+/// redo and a save each make a new version, read once more.
+#[test]
+fn comment_dates_are_read_once_per_version_of_the_document() {
+    let w = World::new();
+    w.put("dated.pdf", &dated_comments());
+    let doc = w.open("dated.pdf");
+    let reads = review::date_reads;
+    let start = reads();
+    let first = w.ok("comments", json!({"doc": doc}));
+    assert_eq!(reads(), start + 1);
+    assert_eq!(w.ok("comments", json!({"doc": doc})), first, "the same answer");
+    assert_eq!(reads(), start + 1, "no change: not read again");
+    w.ok("comment", json!({"doc": doc, "op": "add", "page": 1, "type": "note", "at": [200, 200], "text": "new", "author": "Ana"}));
+    w.ok("comments", json!({"doc": doc}));
+    assert_eq!(reads(), start + 2, "an edit: read again");
+    w.ok("comments", json!({"doc": doc}));
+    assert_eq!(reads(), start + 2, "and once only");
+    w.ok("undo", json!({"doc": doc}));
+    assert_eq!(w.ok("comments", json!({"doc": doc})), first, "undone: the dates as they were");
+    assert_eq!(reads(), start + 3, "an undo: read again");
+    w.ok("redo", json!({"doc": doc}));
+    w.ok("comments", json!({"doc": doc}));
+    assert_eq!(reads(), start + 4, "a redo: read again");
+    w.ok("save", json!({"doc": doc}));
+    w.ok("comments", json!({"doc": doc}));
+    assert_eq!(reads(), start + 5, "a save: read again");
+    w.ok("comments", json!({"doc": doc}));
+    assert_eq!(reads(), start + 5);
+}
+
+/// Dates of hostile bytes, characters of more than one byte where a date's
+/// digits or its zone go, are read without a panic: a zone that is not one
+/// is no zone, and text that is no date stays as the file has it. (Kept
+/// clear of byte 12 after `D:`, where the engine's own listing cuts a date:
+/// a character across it fails the document's opening, an engine fault.)
+#[test]
+fn a_hostile_comment_date_is_read_safely() {
+    let note = |name: &str, top: u32, date: &str| {
+        format!("<< /Type /Annot /Subtype /Text /Rect [40 {} 60 {top}] /T (Ana) /Contents (about {name}) /M ({date}) /NM ({name}) /P 3 0 R >>", top - 20)
+    };
+    let page = "BT /F1 12 Tf 20 280 Td (Hostile dates) Tj ET";
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 8 0 R >> >> /Contents 7 0 R /Annots [4 0 R 5 0 R 6 0 R] >>".to_string(),
+        // é (\351 in PDFDocEncoding, two bytes once decoded) after the hour,
+        // in the zone, and alone.
+        note("digits", 260, "D:2026101014\\351\\351Z"),
+        note("zone", 220, "D:20261010143000+\\351\\351"),
+        note("text", 180, "\\351\\351\\351"),
+        format!("<< /Length {} >>\nstream\n{page}\nendstream", page.len()),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    let w = World::new();
+    w.put("hostile.pdf", &assemble(&objs));
+    let doc = w.open("hostile.pdf");
+    let listed = dates::with_offset(PDT, || dates_of(&w.ok("comments", json!({"doc": doc}))));
+    let date_of = |id: &str| listed.iter().find(|(i, _)| i == id).map(|(_, d)| d.clone()).unwrap_or_else(|| panic!("no {id}: {listed:?}"));
+    assert_eq!(date_of("digits"), "2026-10-10T14:00", "the digits there are, no zone");
+    assert_eq!(date_of("zone"), "2026-10-10T14:30", "a zone that is not one is no zone");
+    assert_eq!(date_of("text"), "\u{e9}\u{e9}\u{e9}", "no date: as the file has it");
+}
+
 // ------------------------------------------------------------ covers
 
 /// `pdf.cover`'s file name: `<name>-<size>-<modified>@<dpi>.png` in

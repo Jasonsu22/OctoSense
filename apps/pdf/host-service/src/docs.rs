@@ -49,7 +49,7 @@ use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use octosense_appstore::makepad_widgets::splash_storage::{self, StorageAccess};
@@ -107,7 +107,15 @@ pub(crate) struct OpenDoc {
     pub sizes: Vec<[f64; 2]>,
     /// Renders in the cache, by (page, dpi).
     pub renders: HashMap<(u64, u32), Rendered>,
+    /// The comments' dates as the file writes them (`review.rs`), with the
+    /// working bytes they were read from: the engine swaps those on every
+    /// edit, undo, redo and save, so a version of the document is read once.
+    pub dates: Option<(Weak<Vec<u8>>, WrittenDates)>,
 }
+
+/// Each comment's and reply's date as the file writes it, by its 1-based page
+/// and its 1-based place in the page's `/Annots`.
+pub(crate) type WrittenDates = HashMap<(u64, u64), String>;
 
 impl OpenDoc {
     /// `extra` with this document's engine id: the arguments of a command
@@ -378,6 +386,7 @@ pub(crate) fn open(a: &Json, cx: &Ctx) -> Result<Json, String> {
         generation: 0,
         sizes,
         renders: HashMap::new(),
+        dates: None,
     };
     let open: Vec<String> = DOCS.with(|docs| {
         let mut docs = docs.borrow_mut();
