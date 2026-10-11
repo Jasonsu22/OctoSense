@@ -68,9 +68,7 @@ THEMES = [
     ("Coral Reef", ["0F2A33", "FFFFFF", "0E4D64", "FDF1EC", "FF6F59", "254441", "43AA8B", "B2B09B", "EF3054", "3F88C5", "3F88C5", "EF3054"], "Poppins", "Nunito Sans"),
     ("Slate", ["111827", "FFFFFF", "374151", "F3F4F6", "6366F1", "0EA5E9", "10B981", "F59E0B", "EF4444", "8B5CF6", "6366F1", "8B5CF6"], "Roboto", "Roboto"),
 ]
-# The engine's other colour schemes (deckcraft's catalog). The service lists
-# them by name only, so the fixture does too; their colours are kept here for
-# when SERVICE.md gives a scheme's colours.
+# The engine's other colour schemes (deckcraft's builtin_color_schemes).
 EXTRA_SCHEMES = [
     ("Grayscale", ["000000", "FFFFFF", "000000", "F8F8F8", "DDDDDD", "B2B2B2", "969696", "808080", "5F5F5F", "4D4D4D", "5F5F5F", "919191"]),
     ("Ocean", ["000000", "FFFFFF", "13293D", "E8F1F2", "006494", "247BA0", "1B98E0", "6CC1E8", "13293D", "0B3954", "1B98E0", "6CC1E8"]),
@@ -155,12 +153,14 @@ class Slide:
 
 # ---- the Q3 2026 board update (designs 02-10) ----------------------------------
 
-def tbox(i, name, box, text, kind="placeholder", ph="body", size=18, bold=False, align="l", bullets=False, paragraphs=None, color=INK, font="Open Sans"):
+def tbox(i, name, box, text, kind="placeholder", ph="body", size=18, bold=False, align="l", bullets=False, paragraphs=None, color=INK, font="Open Sans",
+         anchor="top", autofit="none"):
     paras = paragraphs if paragraphs is not None else [{"text": t, "level": 0} for t in text.split("\n")]
     return {"id": i, "name": name, "kind": kind, "box": box, "rotation": 0, "placeholder": ph if kind == "placeholder" else None,
             "text": text, "paragraphs": paras,
+            # deck.format_state's answer, with the box's anchor and autofit (#507).
             "fmt": {"font": font, "size": size, "bold": bold, "italic": False, "underline": False, "strike": False, "color": color,
-                    "align": align, "bullets": bullets, "numbering": False, "line_spacing": 1.2}}
+                    "align": align, "bullets": bullets, "numbering": False, "line_spacing": 1.2, "anchor": anchor, "autofit": autofit}}
 
 
 def content_shapes(n, title, extra):
@@ -259,7 +259,7 @@ def q3_slides():
         sl.footer(4)
     chart4 = {"id": 403, "name": "Chart 3", "kind": "chart", "box": [96, 120, 768, 360], "rotation": 0,
               "chart": {"type": "Clustered Column", "title": "Revenue by region, Q3 2026 (USD millions)", "categories": [r[0] for r in REGIONS],
-                        "series": [{"name": "Q3 2026", "values": [r[1] for r in REGIONS]}], "legend": None, "data_labels": True, "gridlines": True, "palette": "colorful1"}}
+                        "series": [{"name": "Q3 2026", "values": [r[1] for r in REGIONS]}], "legend": "none", "data_labels": True, "gridlines": True, "palette": "colorful1"}}
     add("Revenue by region", "Title and Content", content_shapes(4, "Revenue by region", [chart4]), s4, "push")
 
     rev_lines = ["Northwest led", "with $12.4 million", "Prices held steady", "in every region", "Online orders", "rose 18%"]
@@ -281,10 +281,10 @@ def q3_slides():
         sl.footer(5)
     add("Revenue grew 12% year over year", "Two Content", content_shapes(5, "Revenue grew 12% year over year", [
         tbox(503, "Content 2", [60, 132, 400, 300], "\n".join(rev_paras), bullets=True, size=20,
-             paragraphs=[{"text": t, "level": 0} for t in rev_paras]),
+             paragraphs=[{"text": t, "level": 0} for t in rev_paras], autofit="shrink"),
         {"id": 504, "name": "Chart 3", "kind": "chart", "box": [480, 120, 420, 330], "rotation": 0,
          "chart": {"type": "Line with Markers", "title": "Quarterly revenue (USD millions)", "categories": [q[0] for q in QUARTERS],
-                   "series": [{"name": "Revenue", "values": [q[1] for q in QUARTERS]}], "legend": None, "data_labels": True, "gridlines": True, "palette": "colorful1"}}]),
+                   "series": [{"name": "Revenue", "values": [q[1] for q in QUARTERS]}], "legend": "none", "data_labels": True, "gridlines": True, "palette": "colorful1"}}]),
         lambda sl: s5(sl, True), "fade", "", editing_draw=lambda sl: s5(sl, False))
 
     def s6(sl):
@@ -309,7 +309,10 @@ def q3_slides():
         sl.footer(6)
     add("Membership by region", "Title and Content", content_shapes(6, "Membership by region", [
         {"id": 603, "name": "Table 3", "kind": "table", "box": [112, 128, 768, 312], "rotation": 0,
-         "table": {"rows": len(MEMBERS), "cols": 3, "style": "medium2-accent1", "cells": [list(r) for r in MEMBERS]}}]), s6, "fade",
+         "table": {"rows": len(MEMBERS), "cols": 3, "style": "medium2-accent1", "cells": [list(r) for r in MEMBERS],
+                   # design 10's table: a header row, banded rows and a total row (#507's options)
+                   "options": {"header_row": True, "total_row": True, "banded_rows": True, "first_column": False, "last_column": False,
+                               "banded_columns": False}}}]), s6, "fade",
         "Total membership passed 18,000 for the first time. Northwest added 460 members, most through the referral program. "
         "Ask Jun Park to say a word about the Metro waitlist.")
 
@@ -459,10 +462,9 @@ def main():
         "themes": {
             "themes": [{"name": n, "label": "Default" if n == "DeckCraft" else n, "colors": ["#" + c for c in cols], "major": mj, "minor": mn}
                        for n, cols, mj, mn in THEMES],
-            # As the service answers (deck.themes, from the engine's design.themes):
-            # the colour schemes by name only, so the five no theme is named after
-            # show no colours (SERVICE.md lists them as [name]).
-            "color_schemes": [n for n, _, _, _ in THEMES] + [n for n, _ in EXTRA_SCHEMES],
+            # As the service answers (#507): every colour set with its twelve colours.
+            "color_schemes": [{"name": n, "colors": ["#" + c for c in cols]} for n, cols, _, _ in THEMES] +
+                             [{"name": n, "colors": ["#" + c for c in cols]} for n, cols in EXTRA_SCHEMES],
             "font_schemes": [{"name": n, "major": a, "minor": b} for n, a, b in FONT_SCHEMES],
         },
         "fonts": FAMILIES,
@@ -512,7 +514,10 @@ def main():
                                     "transition": s["transition"], "builds": 1 if n == 2 else 0, "shapes": shapes, "pic": n})
             fixture["decks"][path] = {"key": key, "title": title, "theme": theme, "size": [960, 540], "slides": deck_slides,
                                       "sections": [{"name": "Highlights", "first": 0, "count": 7}, {"name": "Outlook", "first": 7, "count": 5}],
-                                      "missing_fonts": ["Merriweather", "Open Sans"]}
+                                      "missing_fonts": ["Merriweather", "Open Sans"],
+                                      # design 05: slide numbers on, no date; the slides' footer text
+                                      "footer": {"slide_numbers": True, "footer": True, "footer_text": "Northwind Cooperative", "date": False,
+                                                 "hide_on_title": False}}
         else:
             lines, sub, ground, ink, accent = COVERS[title]
             sl = cover_title_slide(lines, sub, ground, ink, accent)

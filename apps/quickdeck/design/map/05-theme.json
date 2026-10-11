@@ -1455,7 +1455,7 @@
   {
    "id": "colours",
    "role": "Theme · Colours: colour variants, five dots each",
-   "widget": "scheme_card per color_schemes entry (100 x 50): RoundedView with five RoundedView dots 13 (dark 2, accents 1-4) and the name 10.5 → deck.design colors; the current one outlined: the person's choice, else the scheme of the theme's name",
+   "widget": "scheme_card per color_schemes entry (100 x 50): RoundedView with five RoundedView dots 13 (dark 2, accents 1-4, from the set's twelve colours) and the name 10.5 → deck.design colors; the deck's set outlined (deck.open and deck.state color_scheme; View.selected says which); a hint names a deck's own set when it isn't one of these (an imported deck's)",
    "cite": [
     "makepad widgets/src/view_ui.rs:805 (ScrollYView); a view keeps its scroll position across its own render(): view.rs:296-306",
     "makepad widgets/src/view_ui.rs:5 (View); flow: Overlay children placed by margin from the parent's origin (draw/src/turtle.rs)",
@@ -1507,7 +1507,7 @@
    "font": "theme.font_regular",
    "size": 11.5,
    "decision": null,
-   "notes": "The engine has thirteen colour schemes (the eight themes' and Grayscale, Ocean, Sunset, Forest, Berry); the image shows five, so the cards are three to a row to keep Fonts in reach. Contract gap: deck.themes' color_schemes are names only (deckcraft engine/src/cmd/design.rs:92), so the five schemes no theme is named after draw no dots (requested: color_schemes as {name, colors}). Contract gap: deck.open names no colour or font scheme, so the current one is inferred from the theme until the person picks one.",
+   "notes": "The engine has thirteen colour sets (the eight themes' and Grayscale, Ocean, Sunset, Forest, Berry); the image shows five, so the cards are three to a row to keep Fonts in reach. deck.themes gives every set's twelve colours, and deck.open and deck.state name the deck's (#507), so the mark follows a change, an undo and a redo.",
    "image_rect": [
     1161,
     437,
@@ -1688,7 +1688,7 @@
   {
    "id": "fonts",
    "role": "Theme · Fonts: font pairs, the major and minor families",
-   "widget": "font_row per font_schemes entry: RoundedView (2 pt accent when chosen) with Label name 12.5 and Label 'Merriweather / Open Sans' 11, Svg check → deck.design fonts; the current one is the person's choice, else the pair with the theme's major and minor families; a hint names the families drawn with similar fonts (deck.open missing_fonts)",
+   "widget": "font_row per font_schemes entry: RoundedView (2 pt accent when chosen) with Label name 12.5 and Label 'Merriweather / Open Sans' 11, Svg check → deck.design fonts; the deck's pair marked (deck.open and deck.state font_scheme by name, else the pair with the theme's families: a built-in theme's own pair is named after the theme); a hint names the families drawn with similar fonts (deck.open missing_fonts), and a deck's own pair when it isn't one of these",
    "cite": [
     "makepad widgets/src/view_ui.rs:805 (ScrollYView); a view keeps its scroll position across its own render(): view.rs:296-306",
     "makepad widgets/src/view_ui.rs:5 (View); flow: Overlay children placed by margin from the parent's origin (draw/src/turtle.rs)",
@@ -1903,7 +1903,7 @@
   {
    "id": "size_footer",
    "role": "Theme · Slide size (16:9, 4:3) and footer (slide numbers, date)",
-   "widget": "SegRow 16:9 / 4:3 → deck.design size; toggle_rows Slide numbers, Date and a Field 'Footer text' → deck.design footer",
+   "widget": "SegRow 16:9 / 4:3 → deck.design size; toggle_rows Slide numbers, Date and a Field 'Footer text' (typing it shows the footer) → deck.design footer, showing deck.open's and deck.state's footer",
    "cite": [
     "makepad widgets/src/view_ui.rs:805 (ScrollYView); a view keeps its scroll position across its own render(): view.rs:296-306",
     "makepad widgets/src/view_ui.rs:5 (View); flow: Overlay children placed by margin from the parent's origin (draw/src/turtle.rs)",
@@ -1950,7 +1950,7 @@
    "font": "theme.font_regular",
    "size": 11.5,
    "decision": null,
-   "notes": "Contract gap: the footer's state isn't reported, so the toggles show what the person set in this session.",
+   "notes": "The footer controls show the deck's footer (#507: slide_numbers, footer, footer_text, date); a change shows at once, deck.state's answer replaces it, and an undo or a redo brings the deck's own back.",
    "image_rect": [
     1161,
     828,

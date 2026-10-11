@@ -1530,7 +1530,7 @@
    "font": "theme.font_regular",
    "size": 11.5,
    "decision": null,
-   "notes": "The images' five palettes draw only two ways in the engine (render/src/chart.rs:18-30: colourful cycles the accents, monochrome shades accent 1), so the build offers those two. 'Region' over the categories is sample text: the engine keeps no name for its categories. Contract gap: deck.slide's chart lists no legend, data labels or gridlines, so the toggles show the engine's defaults until set.",
+   "notes": "The images' five palettes draw only two ways in the engine (render/src/chart.rs:18-30: colourful cycles the accents, monochrome shades accent 1), so the build offers those two. 'Region' over the categories is sample text: the engine keeps no name for its categories. The toggles and the palette show deck.slide's chart (legend, data_labels, gridlines, palette, #507), a change at once until deck.slide answers again, and the chart's own after Undo or Redo.",
    "image_rect": [
     1187,
     172,

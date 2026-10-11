@@ -6,7 +6,8 @@
 // dev/covers, dev/layouts): the approved designs' sample deck drawn with PIL,
 // standing in for the engine's renders. It answers SERVICE.md's methods with
 // SERVICE.md's shapes, keeps each open document in memory (edits change its
-// data, not its pictures), and answers every call on a later turn.
+// data, not its pictures; undo and redo step back through it), and answers
+// every call on a later turn.
 let fixture_data = nil
 let fixture_docs = {}
 let fixture_next = 1
@@ -112,6 +113,7 @@ fn fx_open_deck(path){
     let deck = optional(decks, path, nil)
     if deck == nil { return nil }
     deck = fx_copy(deck)
+    fx_design_defaults(deck)
     let names = []
     for sec in optional(deck, "sections", []) { names.push(sec.name) }
     if names.len() == 0 { names.push("") }
@@ -122,6 +124,23 @@ fn fx_open_deck(path){
         s.section = k
     }
     deck
+}
+// The deck's design as the service reports it (SERVICE.md "Inspector states
+// (#507)"): a built-in theme's colour set and font pair are named after it.
+fn fx_design_defaults(deck){
+    if optional(deck, "color_scheme", nil) == nil { deck.color_scheme = deck.theme }
+    if optional(deck, "font_scheme", nil) == nil { deck.font_scheme = deck.theme }
+    if optional(deck, "footer", nil) == nil { deck.footer = {slide_numbers: false footer: false footer_text: "" date: false hide_on_title: false} }
+}
+fn fx_design_state(d){ {theme: d.deck.theme color_scheme: d.deck.color_scheme font_scheme: d.deck.font_scheme footer: d.deck.footer} }
+// One undo step per change, as the service folds them: the deck before it.
+let FX_CHANGES = ["format", "set_text", "notes", "insert", "shape", "picture", "table", "chart", "transition", "design", "slides_op"]
+fn fx_remember(d){
+    let past = optional(d, "past", [])
+    past.push(fx_copy(d.deck))
+    while past.len() > 20 { past.remove(0) }
+    d.past = past
+    d.future = []
 }
 fn fx_new_handle(path, deck){
     fixture_next = fixture_next + 1
@@ -134,7 +153,8 @@ fn fx_open_answer(h, d){
     let layouts = []
     for l in optional(fixture(), "layouts", []) { layouts.push({id: l.id name: l.name kind: l.kind}) }
     {doc: h path: d.path title: d.deck.title size: d.deck.size slides: d.deck.slides.len() theme: d.deck.theme layouts: layouts
-        sections: fx_sections(d) rev: d.rev edited: false can_undo: false can_redo: false missing_fonts: optional(d.deck, "missing_fonts", [])}
+        sections: fx_sections(d) rev: d.rev edited: false can_undo: false can_redo: false missing_fonts: optional(d.deck, "missing_fonts", [])
+        color_scheme: d.deck.color_scheme font_scheme: d.deck.font_scheme footer: d.deck.footer}
 }
 fn fx_refusal(path){ optional(optional(fixture(), "refusals", {}), path, nil) }
 fn fx_new_id(){
@@ -143,7 +163,8 @@ fn fx_new_id(){
 }
 fn fx_text_shape(id, box, text, size){
     {id: id name: "Text " + id kind: "textBox" box: box rotation: 0 text: text paragraphs: [{text: text level: 0}]
-        fmt: {font: "Open Sans" size: size bold: false italic: false underline: false strike: false color: "#2B3542" align: "l" bullets: false numbering: false line_spacing: 1.0}}
+        fmt: {font: "Open Sans" size: size bold: false italic: false underline: false strike: false color: "#2B3542" align: "l" bullets: false numbering: false line_spacing: 1.0
+            anchor: "top" autofit: "none"}}
 }
 fn fx_blank_slide(layout, title){
     let shapes = [fx_text_shape(fx_new_id(), [60, 36, 840, 58], title, 34)]
@@ -188,6 +209,7 @@ fn fixture_answer(method, args){
         }
         if slides.len() == 0 { slides.push(fx_blank_slide("Title Slide", "")) }
         let deck = {key: base.key title: file_stem(base_name(out)) theme: optional(args, "theme", "Harbor") size: [960, 540] slides: slides sections: [] section_names: [""] missing_fonts: []}
+        fx_design_defaults(deck)
         fs.write(out, "Quick Deck dev fixture: a stand-in deck\n")
         let n = fx_new_handle(out, deck)
         return fx_ok(fx_open_answer(n.handle, n.doc))
@@ -203,7 +225,8 @@ fn fixture_answer(method, args){
         fixture_docs = kept
         return fx_ok({closed: true})
     }
-    if method == "state" { return fx_ok({rev: d.rev edited: d.edited can_undo: d.can_undo can_redo: d.can_redo undo: nil redo: nil slides: d.deck.slides.len()}) }
+    if method == "state" { return fx_ok(fx_with({rev: d.rev edited: d.edited can_undo: d.can_undo can_redo: d.can_redo undo: nil redo: nil slides: d.deck.slides.len()}, fx_design_state(d))) }
+    if has(FX_CHANGES, method) { fx_remember(d) }
     if method == "save" {
         let path = optional(args, "path", d.path)
         if path != d.path {
@@ -251,7 +274,7 @@ fn fixture_answer(method, args){
         let sh = nil
         if s != nil { sh = fx_shape(s, fx_arg(args, "id")) }
         if sh == nil { return fx_err("unknown_id: no such shape") }
-        return fx_ok(optional(sh, "fmt", {}))
+        return fx_ok(fx_with({anchor: "top" autofit: "none"}, optional(sh, "fmt", {})))
     }
     if method == "format" {
         if s == nil { return fx_err("unknown_id: no such slide") }
@@ -295,7 +318,8 @@ fn fixture_answer(method, args){
                 for c in args.cols { row.push("") }
                 cells.push(row)
             }
-            sh = {id: id name: "Table " + id kind: "table" box: [96, 150, 768, args.rows * 40] rotation: 0 table: {rows: args.rows cols: args.cols style: "medium2-accent1" cells: cells}}
+            sh = {id: id name: "Table " + id kind: "table" box: [96, 150, 768, args.rows * 40] rotation: 0 table: {rows: args.rows cols: args.cols style: "medium2-accent1" cells: cells
+                options: {header_row: true total_row: false banded_rows: true first_column: false last_column: false banded_columns: false}}}
         }
         if kind == "chart" {
             let cats = optional(args, "categories", ["Q1", "Q2", "Q3", "Q4"])
@@ -352,10 +376,25 @@ fn fixture_answer(method, args){
             if optional(args, "type", nil) != nil { c.type = args.type }
             if optional(args, "categories", nil) != nil { c.categories = args.categories }
             if optional(args, "series", nil) != nil { c.series = args.series }
+            if has_key(args, "title") { c.title = "" + optional(args, "title", "") }
+            if optional(args, "legend", nil) != nil { c.legend = "" + args.legend }
+            if optional(args, "data_labels", nil) != nil { c.data_labels = args.data_labels == true }
+            if optional(args, "gridlines", nil) != nil { c.gridlines = args.gridlines == true }
+            if optional(args, "palette", nil) != nil { c.palette = "" + args.palette }
         }
         if method == "table" {
             let tb = sh.table
             if args.op == "style" { tb.style = args.style }
+            if args.op == "options" {
+                let o = optional(tb, "options", {header_row: true total_row: false banded_rows: true first_column: false last_column: false banded_columns: false})
+                if optional(args, "header_row", nil) != nil { o.header_row = args.header_row == true }
+                if optional(args, "total_row", nil) != nil { o.total_row = args.total_row == true }
+                if optional(args, "banded_rows", nil) != nil { o.banded_rows = args.banded_rows == true }
+                if optional(args, "first_column", nil) != nil { o.first_column = args.first_column == true }
+                if optional(args, "last_column", nil) != nil { o.last_column = args.last_column == true }
+                if optional(args, "banded_columns", nil) != nil { o.banded_columns = args.banded_columns == true }
+                tb.options = o
+            }
             if args.op == "insert_row" || args.op == "delete_row" {
                 let rows = []
                 let at = args.row + pick(optional(args, "below", false) == true, 1, 0)
@@ -384,18 +423,48 @@ fn fixture_answer(method, args){
         return fx_ok(fx_change(d, targets))
     }
     if method == "design" {
-        if optional(args, "theme", nil) != nil { d.deck.theme = args.theme }
+        if optional(args, "theme", nil) != nil {
+            d.deck.theme = args.theme
+            d.deck.color_scheme = args.theme
+            d.deck.font_scheme = args.theme
+        }
+        if optional(args, "colors", nil) != nil { d.deck.color_scheme = "" + args.colors }
+        if optional(args, "fonts", nil) != nil { d.deck.font_scheme = "" + args.fonts }
+        let f = optional(args, "footer", nil)
+        if f != nil {
+            let now = d.deck.footer
+            if optional(f, "slide_numbers", nil) != nil { now.slide_numbers = f.slide_numbers == true }
+            if optional(f, "date", nil) != nil { now.date = f.date == true }
+            if optional(f, "footer", nil) != nil { now.footer = f.footer == true }
+            if optional(f, "footer_text", nil) != nil { now.footer_text = "" + f.footer_text }
+            if optional(f, "hide_on_title", nil) != nil { now.hide_on_title = f.hide_on_title == true }
+            d.deck.footer = now
+        }
         if optional(args, "size", nil) == "4:3" { d.deck.size = [720, 540] }
         if optional(args, "size", nil) == "16:9" { d.deck.size = [960, 540] }
         return fx_ok(fx_with(fx_change(d, fx_all(d)), {size: d.deck.size}))
     }
     if method == "slides_op" { return fx_slides_op(d, args) }
     if method == "undo" || method == "redo" {
-        if method == "undo" && !d.can_undo { return fx_err("invalid: nothing to undo") }
-        if method == "redo" && !d.can_redo { return fx_err("invalid: nothing to redo") }
+        let past = optional(d, "past", [])
+        let future = optional(d, "future", [])
+        if method == "undo" && past.len() == 0 { return fx_err("invalid: nothing to undo") }
+        if method == "redo" && future.len() == 0 { return fx_err("invalid: nothing to redo") }
+        if method == "undo" {
+            future.push(fx_copy(d.deck))
+            d.deck = past[past.len() - 1]
+            past.remove(past.len() - 1)
+        } else {
+            past.push(fx_copy(d.deck))
+            d.deck = future[future.len() - 1]
+            future.remove(future.len() - 1)
+        }
+        d.past = past
+        d.future = future
         d.rev = d.rev + 1
-        d.can_undo = method == "redo"
-        d.can_redo = method == "undo"
+        d.edited = true
+        d.can_undo = past.len() > 0
+        d.can_redo = future.len() > 0
         return fx_ok({rev: d.rev changed: fx_all(d) edited: true can_undo: d.can_undo can_redo: d.can_redo undo: nil redo: nil})
     }
     if method == "show" {
