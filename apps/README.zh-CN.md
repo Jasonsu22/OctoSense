@@ -179,7 +179,9 @@ WebView 页面、图库导出、邮件、新闻、Glance 或单次模型调用�
   在 App Hub 的 `card-host` 中（浅色与深色）：开发夹具上每个设计过的页面和状态，以及没有
   引擎时随 Shell 发布的 bundle。在 Linux 上隐藏运行的桌面 Shell 中（无头 weston），使用
   #503 的真实 `deck` 引擎：从大纲生成演示文稿、原地编辑文本、格式、图表、主题、备注、浏览视图、保存、导出和放映，先浅色后深色，然后重启。模型测试通过（`cargo test --locked
-  -p octosense-shell --lib quickdeck_model`）。
+  -p octosense-shell --lib quickdeck_model`）。检查器的状态（#507：文本框的垂直对齐和自动调整、
+  图表的元素、表格的选项、配色方案、字体搭配和页脚，以及它们跟随改动和撤销）于同日在
+  `card-host` 中和真实引擎上验证。
 - **Writer**（2026-10-09）。在用本仓库构建的隐藏桌面 Shell 中（`MAKEPAD_WM_TEST_APP=writer`，
   隐藏窗口的 `--remote` 运行，浅色与深色），使用在 Writer 自己存储中工作的真实 `word` 引擎：
   通过 instrument 输入的文档被保存为 Word 文档（`word.convert` 转换 Writer 写到 `work/` 的

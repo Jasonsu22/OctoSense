@@ -32,7 +32,7 @@ review decision that applies.
 | Toolbar | Slides and Sorter; Text, Picture, Shape, Table, Chart (each opens its insert strip); Undo and Redo; Save, Export and Present |
 | Navigator | New slide, the sections (each folds), numbered thumbnails (the current one outlined, a hidden one dimmed) |
 | Canvas | The current slide, the engine's render at the canvas's width, with the selection's frame and handles; the pill: previous, "5 / 12", next, zoom out, the zoom, zoom in, Fit |
-| Inspector | Format (what the selection is decides what shows: text, box, shape, picture, table, chart, arrange), Layout (the eleven layouts, background, transition, skip), Theme (themes, colours, fonts, slide size, footer), Notes |
+| Inspector | Format (what the selection is decides what shows: text, box, shape, picture, table, chart, arrange), Layout (the eleven layouts, background, transition, skip), Theme (themes, colours, fonts, slide size, footer), Notes. Every switch and mark shows what the deck has: a box's anchor and autofit (`deck.format_state`), a chart's elements and palette and a table's options (`deck.slide`), the colour set, font pair and footer (`deck.open`, `deck.state`); a change shows at once, the service's next answer confirms it, and after Undo or Redo the deck's own come back without reopening |
 | Status line | Saved or Edited, "Slide 5 of 12 · 16:9" (in the sorter, "12 slides · 2 selected"), and what the app's storage holds against what it may hold, from the shell's `files.status` |
 
 The designs are drawn at 1536 x 1024, and the manifest asks the desktop to
@@ -170,9 +170,9 @@ exceeded` in its log); `--budget-ms 1000` raises the shell's budget
 | Run | What it covers |
 | --- | --- |
 | `missing` | `card-host` with the shipped bundle: no engine and no files service, on Home, in a deck's tab and on the outline page with its Draft with AI |
-| `fixture` | `card-host` with the dev fixture: every designed screen at the designs' 1536 x 1024, light and dark, each grab beside its design in `compare/` |
+| `fixture` | `card-host` with the dev fixture: every designed screen at the designs' 1536 x 1024, light and dark, each grab beside its design in `compare/`, then a table's options and the footer; the inspector's switches and marks are checked against what the stand-in reports, and a table option and the footer's date against what it reports after a change and its Undo |
 | `states` | The dev fixture's damaged, protected, held and unsupported presentations, the unsaved-changes bar, storage full and the empty library of a first run |
-| `shell` | A deck made from an outline with the real engine, then edited: text in place, bold, a chart, undo and redo, a layout, a theme, notes, the sorter, save, export and Present; light, then dark through the shell's own style menu |
+| `shell` | A deck made from an outline with the real engine, then edited: text in place, bold, a chart, undo and redo, a layout, a theme, notes, the sorter, save, export and Present; light, then dark through the shell's own style menu. In the light pass the inspector's states follow real changes and their Undo: a box's anchor and autofit, a chart's data labels, a table's total row, the colour set and the footer, each read again from the engine (the shape chosen again, or the deck's design asked again) |
 | `restart` | The same home again: the library, the deck's cover and slides |
 
 The dev fixture never ships. `dev-fixture/engine.splash` is a stand-in for
@@ -182,8 +182,12 @@ the deck engine that answers SERVICE.md's methods as the service does;
 designs' sample deck (the Northwind Q3 board update, its slides drawn as
 pictures from the designs' own sample text), five more decks for Home, the
 layout pictures, and what the stand-in answers (the engine's real themes,
-colour and font schemes, shapes and fonts); `--states`, `--full` and
-`--empty` make the other runs' libraries.
+colour sets with their colours, font pairs, shapes and fonts, and each box's,
+chart's, table's and the deck's states as #507 reports them); the stand-in
+keeps an undo history of the deck's data. `--states`, `--full` and `--empty`
+make the other runs' libraries. `--bundle DIR --grabs-only` takes the same
+frames of another bundle (main's, for a before and after) without checking
+the states.
 
 ```sh
 python3 apps/quickdeck/dev-fixture/make_fixture.py <card-host app data>/os.quickdeck
@@ -192,7 +196,9 @@ python3 apps/quickdeck/dev-fixture/make_fixture.py <card-host app data>/os.quick
 ## Status
 
 See [tests/evidence/v2-20261011](tests/evidence/v2-20261011/README.md) for
-the frames, side-by-sides and receipt.
+v2's frames, side-by-sides and receipt, and
+[tests/evidence/inspector-states-20261011](tests/evidence/inspector-states-20261011/README.md)
+for the inspector's states (#507).
 
 - **Verified on 11 Oct 2026, in `card-host`** (macOS, Apple silicon, at the
   runtime's 64 ms budget): the `missing`, `fixture` and `states` runs, light
@@ -204,6 +210,14 @@ the frames, side-by-sides and receipt.
   overrun. The shell opened Quick Deck at 1296 x 698 points (an app area of
   1292 x 662). The model tests pass there (22; 23 with `--features app-hub`,
   which adds the manifest's window hint).
+- **Verified on 11 Oct 2026, the inspector's states** (#507): in `card-host`,
+  the `fixture` and `states` runs, light and dark, at the 64 ms budget, the
+  switches and marks checked against the stand-in; with the real engine on
+  Linux (shell built from this branch on main eb2fd5d1, which has #507), the
+  `shell` run's light pass changed a box's anchor and autofit, a chart's
+  data labels, a table's total row, the colour set and the footer, read each
+  back from the engine, then undid each and read the deck's own back; then
+  dark and `restart`. The model tests pass (27).
 - **Not verified**: a real import from the device (a hidden window on macOS
   has the dialog refused, and the Linux host has no dialog helper), so the
   import guard's refusals through the app; Draft with AI with a real provider
@@ -214,7 +228,7 @@ the frames, side-by-sides and receipt.
 - **Known**: the shell's window is smaller than the designs' 1536 x 1024, so
   the theme panel, Export and the outline scroll. Theme previews draw the
   app's own font (OctoSense bundles no theme fonts). A box being edited
-  shows plain lines without bullets. The colour schemes no theme is named
-  after show their names only, and the current colours and fonts are
-  inferred from the theme: the service doesn't report them yet. Present
-  fills the app's window, not the screen.
+  shows plain lines without bullets. A built-in theme's own font pair is
+  named after the theme, so the pair with the same families is marked (Harbor's
+  fonts are Classic's); an imported deck's own colours or fonts are named in a
+  hint. Present fills the app's window, not the screen.

@@ -230,7 +230,10 @@ See [capabilities and execution boundaries](../docs/capabilities.md).
   on the dev fixture, and the shipped bundle with no engine. In a hidden
   desktop shell on Linux (headless weston) with the real `deck` engine of
   #503: a deck made from an outline, text edited in place, a format, a chart, a theme, notes, the sorter, save, export and Present, light then dark, then a restart. The model tests pass (`cargo test --locked
-  -p octosense-shell --lib quickdeck_model`).
+  -p octosense-shell --lib quickdeck_model`). The inspector's states (#507:
+  a box's anchor and autofit, a chart's elements, a table's options, the
+  colour set, font pair and footer, following a change and its undo) were
+  verified the same day, in `card-host` and with the real engine.
 - **Writer** (2026-10-09). In a hidden desktop shell built from this tree
   (`MAKEPAD_WM_TEST_APP=writer`, a hidden `--remote` run, light and dark),
   with the real `word` engine working in Writer's own storage: a document
