@@ -178,44 +178,82 @@ pub(crate) fn pages(a: &Json, cx: &Ctx) -> Result<Json, String> {
     }
 }
 
-/// `pdf.edit_text {doc, page, paragraph?, line?, text, align?, color?}`:
-/// `align` and `color` format a paragraph (the module doc's review).
+/// What an edit names: a paragraph or a line, by its 1-based number from
+/// `pdf.lines`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Target {
+    Paragraph(u64),
+    Line(u64),
+}
+
+/// One edit as `pdf.edit_text` and `pdf.edit_check` take it, checked: the
+/// page, what it names, the new text, and a paragraph's alignment (one of
+/// [`ALIGNS`]) and colour (`#rrggbb`, as the service writes it).
+pub(crate) struct EditCall<'a> {
+    pub page: u64,
+    pub target: Target,
+    pub text: &'a str,
+    pub align: Option<&'a str>,
+    pub color: Option<String>,
+}
+
+impl<'a> EditCall<'a> {
+    /// Read `{doc, page, paragraph?, line?, text, align?, color?}` for method
+    /// `m`: `align` and `color` format a paragraph (the module doc's review).
+    pub(crate) fn read(a: &'a Json, m: &str) -> Result<Self, String> {
+        args::only(a, &["doc", "page", "paragraph", "line", "text", "align", "color"], m)?;
+        let page = args::positive(a, "page", m)?;
+        let text = args::opt_str(a, "text", m, MAX_EDIT)?.ok_or_else(|| invalid(format!("{m} needs `text`")))?;
+        let paragraph = args::opt_int(a, "paragraph", m)?;
+        let line = args::opt_int(a, "line", m)?;
+        let align = match args::opt_str(a, "align", m, 16)? {
+            Some(al) if ALIGNS.contains(&al) => Some(al),
+            Some(al) => return Err(invalid(format!("{m}: `align` is {}, not {al:?}", ALIGNS.join(", ")))),
+            None => None,
+        };
+        let color = match args::opt_str(a, "color", m, 16)? {
+            Some(c) => Some(hex_color(c).ok_or_else(|| invalid(format!("{m}: `color` is #rrggbb, not {c:?}")))?),
+            None => None,
+        };
+        let target = match (paragraph, line) {
+            (Some(n), None) if n >= 1 => Target::Paragraph(n as u64),
+            (None, Some(_)) if align.is_some() || color.is_some() => {
+                return Err(invalid(format!("{m}: `align` and `color` format a paragraph: give `paragraph`, a number from pdf.lines, not `line`")));
+            }
+            (None, Some(n)) if n >= 1 => Target::Line(n as u64),
+            _ => return Err(invalid(format!("{m}: give exactly one of `paragraph` or `line`, a number from pdf.lines"))),
+        };
+        Ok(EditCall { page, target, text, align, color })
+    }
+
+    /// The engine's `text_edit` arguments, built from the checked values.
+    fn engine_args(&self) -> Json {
+        let mut call = json!({ "page": self.page, "text": self.text });
+        match self.target {
+            Target::Paragraph(n) => {
+                call["paragraph"] = json!(n);
+                if let Some(align) = self.align {
+                    call["align"] = json!(align);
+                }
+                if let Some(color) = &self.color {
+                    call["color"] = json!(color);
+                }
+            }
+            Target::Line(n) => call["line"] = json!(n),
+        }
+        call
+    }
+}
+
+/// `pdf.edit_text {doc, page, paragraph?, line?, text, align?, color?}`. A
+/// refusal is in plain words ([`codes::edit_refused`]), the ones
+/// `pdf.edit_check` gives for the same edit.
 pub(crate) fn edit_text(a: &Json, cx: &Ctx) -> Result<Json, String> {
     const M: &str = "pdf.edit_text";
-    args::only(a, &["doc", "page", "paragraph", "line", "text", "align", "color"], M)?;
-    let page = args::positive(a, "page", M)?;
-    let text = args::opt_str(a, "text", M, MAX_EDIT)?.ok_or_else(|| invalid(format!("{M} needs `text`")))?;
-    let paragraph = args::opt_int(a, "paragraph", M)?;
-    let line = args::opt_int(a, "line", M)?;
-    let align = match args::opt_str(a, "align", M, 16)? {
-        Some(al) if ALIGNS.contains(&al) => Some(al),
-        Some(al) => return Err(invalid(format!("{M}: `align` is {}, not {al:?}", ALIGNS.join(", ")))),
-        None => None,
-    };
-    let color = match args::opt_str(a, "color", M, 16)? {
-        Some(c) => Some(hex_color(c).ok_or_else(|| invalid(format!("{M}: `color` is #rrggbb, not {c:?}")))?),
-        None => None,
-    };
-    let mut call = json!({ "page": page, "text": text });
-    match (paragraph, line) {
-        (Some(n), None) if n >= 1 => {
-            call["paragraph"] = json!(n);
-            if let Some(align) = align {
-                call["align"] = json!(align);
-            }
-            if let Some(color) = color {
-                call["color"] = json!(color);
-            }
-        }
-        (None, Some(_)) if align.is_some() || color.is_some() => {
-            return Err(invalid(format!("{M}: `align` and `color` format a paragraph: give `paragraph`, a number from pdf.lines, not `line`")));
-        }
-        (None, Some(n)) if n >= 1 => call["line"] = json!(n),
-        _ => return Err(invalid(format!("{M}: give exactly one of `paragraph` or `line`, a number from pdf.lines"))),
-    }
+    let edit = EditCall::read(a, M)?;
     docs::with_doc(a, cx, M, |doc| {
-        doc.size(page)?;
-        doc.call("text_edit", call).map_err(|e| codes::refused(&e))?;
+        doc.size(edit.page)?;
+        doc.call("text_edit", edit.engine_args()).map_err(|e| codes::edit_refused(&e.to_string(), edit.text))?;
         doc.changed();
         Ok(json!({ "edited": true }))
     })

@@ -120,8 +120,18 @@ app's own agent and `tools.json`, the system toolbox, `glance.publish` and
   cleared before a write would fail with `storage_full:`. `pdf.comments`
   reads each date with its zone from the file once per version of the
   document (`src/review.rs`). `pdf.fields` marks
-  read-only fields, and `pdf.fill` refuses one. Errors start with a stable
-  code (`src/codes.rs`).
+  read-only fields, and `pdf.fill` refuses one. `pdf.edit_check` takes
+  `pdf.edit_text`'s arguments and says what that edit would do before PDF
+  Tools makes it (the font it would be drawn in, the lines of text it would
+  run into, text off the page), by running the engine's own editor
+  (pdfcraft-edit) on a copy opened from the open document's working bytes
+  and dropping it (`src/fit.rs`): no engine command, nothing written. Both
+  refuse an edit the engine won't make in plain words (text no available
+  font shows, such as Chinese, Japanese or Korean without the engine's
+  fallback face; a read-only or locked document; a stale paragraph number),
+  still `invalid:` (`codes::edit_refused`); the `--edit-sample` page of
+  `pdftools_fixture` reproduces the real-world cases. Errors start with a
+  stable code (`src/codes.rs`).
 - Declare an app's agent in its manifest and `bundle/tools.json`. Keep the
   input/output schemas consistent with the executor (octos requires an object
   output schema), and select the actual risk, sharing and confirmation policy.

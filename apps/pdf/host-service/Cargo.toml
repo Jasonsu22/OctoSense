@@ -29,6 +29,10 @@ pdfcraft-automation = { workspace = true }
 # reader, on the open document's working bytes, read only (src/review.rs).
 pdfcraft-cos = { workspace = true }
 pdfcraft-annot = { workspace = true }
+# What an edit would do before it is made (`pdf.edit_check`, src/fit.rs): the
+# engine's own paragraph and line rewriting, on a copy of the open document's
+# working bytes that is then dropped.
+pdfcraft-edit = { workspace = true }
 
 # This device's offset from UTC, from where the shell's status clock reads it
 # (crates/shell/src/shell/bar.rs): localtime_r on Unix, chrono elsewhere.

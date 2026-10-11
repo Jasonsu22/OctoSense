@@ -288,6 +288,9 @@ pdfcraft-automation = { git = "https://github.com/ymote/pdfcraft.git", rev = "61
 # reader, which keep `/M` with its zone (the engine's listing drops it).
 pdfcraft-cos = { git = "https://github.com/ymote/pdfcraft.git", rev = "615ff308173a3dd7c595fc598508b519a895c0e9" }
 pdfcraft-annot = { git = "https://github.com/ymote/pdfcraft.git", rev = "615ff308173a3dd7c595fc598508b519a895c0e9" }
+# The pdf service's edit check: the engine's own text editor, run on a copy of
+# the open document to see what an edit would do before PDF Tools makes it.
+pdfcraft-edit = { git = "https://github.com/ymote/pdfcraft.git", rev = "615ff308173a3dd7c595fc598508b519a895c0e9" }
 # The pdf service's tests only: the engine's own scripted XFA form, the
 # hostile fixture of the scripts-off fence (ADR 0013).
 pdfcraft-xfa = { git = "https://github.com/ymote/pdfcraft.git", rev = "615ff308173a3dd7c595fc598508b519a895c0e9" }
