@@ -6508,7 +6508,7 @@ dependencies = [
 [[package]]
 name = "hayro"
 version = "0.7.1"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "bytemuck 1.25.2",
  "hayro-interpret",
@@ -6543,7 +6543,7 @@ dependencies = [
 [[package]]
 name = "hayro-interpret"
 version = "0.7.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "bitflags 2.13.2",
  "hayro-cmap",
@@ -6586,7 +6586,7 @@ checksum = "885c5ef0654933139a9b9546fc2c69e18d37f38aa2520f079092b1be18f1fcaa"
 [[package]]
 name = "hayro-syntax"
 version = "0.7.2"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "flate2",
  "hayro-ccitt 0.3.0",
@@ -8448,7 +8448,7 @@ dependencies = [
 [[package]]
 name = "lopdf"
 version = "0.45.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "aes 0.9.3",
  "bitflags 2.13.2",
@@ -12418,7 +12418,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-a11y"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "pdfcraft-content",
  "pdfcraft-cos",
@@ -12429,7 +12429,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-annot"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "pdfcraft-cos",
  "pdfcraft-fonts",
@@ -12439,7 +12439,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-automation"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "pdfcraft-engine",
  "pdfcraft-organize",
@@ -12451,12 +12451,12 @@ dependencies = [
 [[package]]
 name = "pdfcraft-compare"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 
 [[package]]
 name = "pdfcraft-content"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "pdfcraft-cos",
 ]
@@ -12464,7 +12464,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-cos"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "pdfcraft-crypt",
  "pdfcraft-filters",
@@ -12474,7 +12474,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-create"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "image",
  "pdfcraft-cos",
@@ -12488,7 +12488,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-crypt"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "aes 0.9.3",
  "md-5 0.11.0",
@@ -12500,7 +12500,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-edit"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "pdfcraft-content",
  "pdfcraft-cos",
@@ -12512,7 +12512,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-engine"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "chrono",
  "image",
@@ -12545,7 +12545,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-export"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "flate2",
 ]
@@ -12553,7 +12553,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-filters"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "flate2",
  "thiserror 2.0.20",
@@ -12562,7 +12562,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-fonts"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "pdfcraft-cos",
  "skrifa 0.44.0",
@@ -12571,7 +12571,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-forms"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "pdfcraft-content",
  "pdfcraft-cos",
@@ -12583,7 +12583,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-js"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "boa_engine",
 ]
@@ -12591,7 +12591,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-measure"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "pdfcraft-annot",
  "pdfcraft-content",
@@ -12604,7 +12604,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-model"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "pdfcraft-cos",
 ]
@@ -12612,7 +12612,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-ocr"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "ocrs",
  "pdfcraft-fonts",
@@ -12623,7 +12623,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-optimize"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "image",
  "pdfcraft-annot",
@@ -12636,7 +12636,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-organize"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "pdfcraft-content",
  "pdfcraft-cos",
@@ -12646,7 +12646,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-preflight"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "pdfcraft-cos",
  "pdfcraft-model",
@@ -12655,7 +12655,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-print"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "pdfcraft-content",
  "pdfcraft-cos",
@@ -12666,7 +12666,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-redact"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "pdfcraft-annot",
  "pdfcraft-content",
@@ -12681,7 +12681,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-render"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "getrandom 0.4.3",
  "hayro",
@@ -12695,7 +12695,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-sign"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "aes 0.9.3",
  "aws-lc-rs",
@@ -12722,7 +12722,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-xfa"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "base64 0.22.1",
  "pdfcraft-cos",
@@ -12734,7 +12734,7 @@ dependencies = [
 [[package]]
 name = "pdfcraft-xfdf"
 version = "0.4.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"
 dependencies = [
  "pdfcraft-annot",
  "pdfcraft-cos",
@@ -21022,4 +21022,4 @@ dependencies = [
 [[patch.unused]]
 name = "hayro-jbig2"
 version = "0.3.0"
-source = "git+https://github.com/ymote/pdfcraft.git?rev=d801407a9f956281d612dee3d2d72c76d43ef399#d801407a9f956281d612dee3d2d72c76d43ef399"
+source = "git+https://github.com/ymote/pdfcraft.git?rev=615ff308173a3dd7c595fc598508b519a895c0e9#615ff308173a3dd7c595fc598508b519a895c0e9"

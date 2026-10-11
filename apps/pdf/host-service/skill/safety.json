@@ -1,6 +1,6 @@
 {
   "engine": "pdfcraft",
-  "revision": "d801407a9f956281d612dee3d2d72c76d43ef399",
+  "revision": "615ff308173a3dd7c595fc598508b519a895c0e9",
   "regenerate": "OCTOSENSE_SKILL_REGEN=1 cargo test --locked -p octosense-pdf-service --test skill",
   "rules": "safety-rules.json",
   "classes": {
