@@ -1,14 +1,11 @@
-# Quick Deck v2: deck service contract (DRAFT)
+# Quick Deck v2: deck service contract
 
-**Status: a first draft for the coordinator to settle.** Nothing here is
-built. The open questions at the end need answers before a service agent and
-a UI agent start. Once settled, this file becomes `SERVICE.md`: both sides
-build against it, and a change goes to both, as with PDF Tools'
-`apps/pdftools/design/SERVICE.md`, which this draft follows.
-
-These are the app-facing methods Quick Deck v2 calls over `host.request`. The
-service (`apps/deck/host-service`) would implement them, and the app
-(`apps/quickdeck/bundle`) would call nothing else. They are derived from
+The app-facing methods Quick Deck v2 calls over `host.request`. The service
+(`apps/deck/host-service`) implements them, and the app
+(`apps/quickdeck/bundle`) calls nothing else. Both sides build against this
+file, and a change to it goes to both, as with PDF Tools'
+`apps/pdftools/design/SERVICE.md`, which it follows. The decisions at the end
+settle what the first draft left open. They are derived from
 `BRIEF.md` ("Actions and the engine"). Each method lists the deckcraft
 commands it runs (engine d0e57d7e; classes from `skill/safety.json`).
 
@@ -45,11 +42,14 @@ commands it runs (engine d0e57d7e; classes from `skill/safety.json`).
   into one, labelled by the action (for example "Format text"). The engine's
   `History` is public. Undo history is limited to 100 steps per document;
   the engine's default is 500 shared-slide snapshots.
-- **One gate.** Every engine command a method runs passes the same gate as
-  `deck.run`: `door()?.admit_all`, the allowlist built from `safety.json`
-  and `REVIEWED`. So the door's limits (table cells, chart points, extents,
-  line breaks, slide area) and its held commands (#448) apply to the app as
-  to the agent. The `RunBudget` ceilings then hold after every command. The
+- **One gate.** Every engine command a method runs passes the same allowlist
+  as `deck.run`: the door built from `safety.json` and `REVIEWED`. So the
+  door's limits (table cells, chart points, extents, line breaks, slide area)
+  and its held commands (#448) apply to the app as to the agent. The door's
+  64 commands a call are `deck.run`'s; each app method has its own most
+  commands a call, with its reason beside it (decision 2), and every command
+  is admitted before any runs. The `RunBudget` ceilings then hold after every
+  command. The
   service builds every engine argument itself, and each method refuses a key
   it doesn't take. Nothing reaches `file.*` commands that touch paths,
   `show.*` start commands, `media.*` playback or the held ids.
@@ -130,11 +130,14 @@ commands it runs (engine d0e57d7e; classes from `skill/safety.json`).
   must be within the door's session ceilings: 500 slides, 20,000 shapes,
   2,000 on one slide, 50,000 table cells, 50,000 chart points, 1,000,000
   characters and 128 MiB of media. Otherwise the answer is `too_large:`.
-- **Import guard** (open question 3). Before the engine sees a zip (`.pptx`
-  or `.deckcraft`), the service reads its central directory. It refuses with
-  `held:` more than 10,000 entries, any entry declaring over 64 MiB
-  uncompressed, a declared total over 256 MiB, and any audio or video part
-  (by content type or extension). An OLE file (`D0 CF 11 E0`) is
+- **Import guard** (decision 4). Before the engine sees a zip (`.pptx` or
+  `.deckcraft`), the service reads its central directory, on every path
+  that opens a file: `deck.open`, `deck.cover`, the v1 file methods and the
+  agent's `deck.info`. It refuses with `held:` more than 10,000 entries, any
+  entry declaring over 64 MiB uncompressed, a declared total over 256 MiB, a
+  compression ratio over 100 to 1, a zip inside the zip, and any audio or
+  video part (by content type or extension). A directory that doesn't parse,
+  or an entry that inflates past its declared size, is `damaged:`. An OLE file (`D0 CF 11 E0`) is
   `protected:` when it holds an `EncryptedPackage` stream, and
   `unsupported:` otherwise (a legacy `.ppt`).
 
@@ -248,7 +251,8 @@ notes at most 20,000 characters.
   has at most 10,000 data points; a text has at most 1,000 line breaks; no
   position or size goes past 100,000 pt; and one call's picture reads total
   at most 64 MiB. Beyond the door, a call names at most 500 shapes, and a
-  `cells` fill holds at most 5,625 cells.
+  `cells` fill holds at most 1,024 cells (decision 2); a larger table gets
+  the rest of its text cell by cell through `deck.set_text`.
 
 ## Design
 
@@ -285,8 +289,8 @@ notes at most 20,000 characters.
   through its steps before the next slide. Transitions and animations are not
   played: each step shows its end state. That is the honest limit of a
   Splash host.
-- **Dependency.** `deckcraft-anim` would be a new service dependency, at the
-  same pinned deckcraft rev. The engine crate doesn't depend on it today.
+- **Dependency.** `deckcraft-anim` is a new service dependency, at the same
+  pinned deckcraft rev (decision 5). The engine crate doesn't depend on it.
 
 ## Export
 
@@ -328,8 +332,9 @@ file, and neither changes it without the coordinator.
 4. **The import guard: the service's own, before the engine sees a byte.**
    "Open a presentation from this device" goes through it: the zip's central
    directory read with bounds (entries, names, declared and actual sizes,
-   compression ratio, nesting), embedded audio and video refused, and any
-   refusal answered as `damaged:` or `invalid:` with plain words. Hostile
+   compression ratio, nesting), embedded audio and video refused, and every
+   refusal answered as the Import guard above says (`held:`, `damaged:`,
+   `protected:` or `unsupported:`) with plain words. Hostile
    fixtures (a zip bomb, a lying declared size, ten thousand entries, media)
    prove each refusal happens before the engine runs. Engine-side bounds stay
    tracked in #448.
@@ -346,7 +351,18 @@ file, and neither changes it without the coordinator.
    a save and a reopen; a timing test (ignored by default). Engine crate
    tests are not in CI (#412), so they run by hand on every change.
 
-Also settled: **Draft with AI** (BRIEF open question 2) is in, through the
-host's `model.complete` with the person's own provider; the app never sees a
-key and works without a provider. Quick Deck's manifest asks for a
-1536 x 1024 window (`"schema_minor": 1`), as PDF Tools does.
+BRIEF.md's open questions are settled too:
+
+1. **Working format:** the library keeps native `.deckcraft` files and
+   exports `.pptx`.
+2. **Draft with AI** is in, through the host's `model.complete` (the `model`
+   capability, Settings → AI providers) with the person's own provider; the
+   app never sees a key and works without a provider.
+3. **Opening `.pptx` from this device** ships behind the service's import
+   guard (decision 4).
+4. **Theme fonts:** system fallbacks (decision 7).
+5. **Notes in Present:** the notes strip and timer, as screen 08 shows. A
+   presenter layout (current and next slide) is a later design.
+
+Quick Deck's manifest asks for a 1536 x 1024 window (`"schema_minor": 1`),
+as PDF Tools does.
