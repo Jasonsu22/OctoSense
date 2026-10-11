@@ -515,6 +515,53 @@ fn comment_add_takes_no_file_parameter() {
     assert_eq!(w.ok("state", json!({"doc": doc}))["edited"], false);
 }
 
+/// A comment date with a character of more than one byte across byte 12
+/// after `D:`, where the engine's own listing (pdfcraft-render's
+/// `pretty_date`) used to slice it before checking the boundary: the engine
+/// caught the panic, but lost the document's pages with it, so a valid PDF
+/// failed to open as `damaged: … the document has no pages`. It opens, its
+/// comments list with such dates read safely (text that is no date stays as
+/// the file has it), and an edit, which lists the comments again, works.
+#[test]
+fn a_comment_date_cut_inside_a_character_still_opens() {
+    let note = |name: &str, top: u32, date: &str| {
+        format!("<< /Type /Annot /Subtype /Text /Rect [40 {} 60 {top}] /T (Ana) /Contents (about {name}) /M ({date}) /NM ({name}) /P 3 0 R >>", top - 20)
+    };
+    let page = "BT /F1 12 Tf 20 280 Td (Hostile dates) Tj ET";
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R /Annots [4 0 R 5 0 R] >>".to_string(),
+        // é (\351 in PDFDocEncoding, two bytes once decoded) on bytes 11
+        // and 12 after `D:`: after eleven digits, and in text that is no
+        // date at all.
+        note("digits", 260, "D:20261010143\\351Z"),
+        note("text", 220, "Signed \\351\\351\\351"),
+        format!("<< /Length {} >>\nstream\n{page}\nendstream", page.len()),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    let w = World::new();
+    w.put("hostile.pdf", &assemble(&objs));
+    assert_eq!(w.ok("info", json!({"path": "hostile.pdf"}))["document"]["pages"], json!(1), "the file method reads it too");
+    let open = w.ok("open", json!({"path": "hostile.pdf"}));
+    assert_eq!((open["pages"].clone(), open["comments"].clone()), (json!(1), json!(2)), "{open}");
+    let doc = open["doc"].as_str().unwrap().to_string();
+    let list = w.ok("comments", json!({"doc": doc}));
+    let all = list["comments"].as_array().unwrap();
+    let by_id = |all: &[Json], id: &str| all.iter().find(|c| c["id"] == id).cloned().unwrap_or_else(|| panic!("no comment {id}: {all:?}"));
+    let digits = by_id(all, "digits");
+    assert_eq!((digits["author"].clone(), digits["text"].clone()), (json!("Ana"), json!("about digits")), "{digits}");
+    assert!(digits["date"].as_str().is_some_and(|d| d.starts_with("2026-10-10")), "the digits there are: {digits}");
+    assert_eq!(by_id(all, "text")["date"], json!("Signed \u{e9}\u{e9}\u{e9}"), "no date: as the file has it");
+
+    w.ok("comment", json!({"doc": doc, "op": "add", "page": 1, "type": "note", "at": [200, 200], "text": "new", "author": "Tom"}));
+    let after = w.ok("comments", json!({"doc": doc}));
+    let after = after["comments"].as_array().unwrap();
+    assert_eq!(after.len(), 3, "{after:?}");
+    assert_eq!(by_id(after, "text")["date"], json!("Signed \u{e9}\u{e9}\u{e9}"), "listed again after the edit");
+    assert_eq!(w.ok("close", json!({"doc": doc, "discard": true})), json!({"closed": true}));
+}
+
 #[test]
 fn fields_fill_and_fill_and_sign() {
     let w = World::new().samples();
