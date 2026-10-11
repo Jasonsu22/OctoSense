@@ -11,7 +11,8 @@
 //!   the engine's `picture.change` would otherwise embed whatever its type;
 //! - the picture is at most [`MAX_PIXELS`] by its own header: the engine
 //!   decodes a picture whole into memory on the UI thread, so a small file
-//!   naming a huge picture is refused here (`too_large:`).
+//!   naming a huge picture is refused here (`too_large:`), and so is one
+//!   whose header doesn't say its size (`invalid:`), which fails closed.
 
 use octosense_engine_area::door::MAX_READ_BYTES;
 use octosense_engine_area::Area;
@@ -151,10 +152,9 @@ pub(crate) fn check(area: &Area, rel: &str, key: &str, m: &str) -> Result<String
     if kind(&bytes).is_none() {
         return Err(invalid(format!("{rel} is not a picture the deck engine draws (PNG, JPEG, WebP, GIF, TIFF or BMP; it has no SVG)")));
     }
-    if let Some((w, h)) = dimensions(&bytes) {
-        if w.saturating_mul(h) > MAX_PIXELS {
-            return Err(too_large(format!("{rel} is {w} × {h} pixels, more than the {} megapixels a picture may have", MAX_PIXELS / 1_000_000)));
-        }
+    let (w, h) = dimensions(&bytes).ok_or_else(|| invalid(format!("{rel}: can't read the picture's size")))?;
+    if w.saturating_mul(h) > MAX_PIXELS {
+        return Err(too_large(format!("{rel} is {w} × {h} pixels, more than the {} megapixels a picture may have", MAX_PIXELS / 1_000_000)));
     }
     Ok(crate::normal(rel))
 }

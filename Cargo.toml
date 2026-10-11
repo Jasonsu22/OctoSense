@@ -242,6 +242,7 @@ deckcraft-format = { git = "https://github.com/ymote/deckcraft.git", rev = "d0e5
 deckcraft-model = { git = "https://github.com/ymote/deckcraft.git", rev = "d0e57d7e25f9852179cc66be12dd6188f1c05535" }
 deckcraft-anim = { git = "https://github.com/ymote/deckcraft.git", rev = "d0e57d7e25f9852179cc66be12dd6188f1c05535" }
 deckcraft-fonts = { git = "https://github.com/ymote/deckcraft.git", rev = "d0e57d7e25f9852179cc66be12dd6188f1c05535" }
+deckcraft-pptx = { git = "https://github.com/ymote/deckcraft.git", rev = "d0e57d7e25f9852179cc66be12dd6188f1c05535" }
 # The cadcraft drafting engine (ADR 0013): the pinned ymote fork, one revision.
 cadcraft-engine = { git = "https://github.com/ymote/cadcraft.git", rev = "59631c8d4f9ffe6c08c5c2065ea17504e53bf821" }
 cadcraft-io = { git = "https://github.com/ymote/cadcraft.git", rev = "59631c8d4f9ffe6c08c5c2065ea17504e53bf821" }

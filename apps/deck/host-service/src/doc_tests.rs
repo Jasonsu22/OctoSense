@@ -471,12 +471,45 @@ fn hostile() -> Vec<(&'static str, Vec<u8>, &'static str)> {
     // A chart's workbook that is a zip bomb: refused by its ratio.
     let workbook_bomb = fx::package(vec![Part::deflated("ppt/embeddings/Microsoft_Excel_Worksheet1.xlsx", &[fx::zip(&[Part::stored("a", b"b")]), vec![0u8; 16 << 20]].concat())], "");
     let media = fx::package(vec![Part::stored("ppt/media/media1.mp4", b"\0\0\0\x18ftypisom")], "");
+    // A zip whose end record is `end(directory size, directory offset)`.
+    let ended = |parts: &[Part], end: &dyn Fn(u32, u32) -> Vec<u8>| {
+        let l = fx::layout(parts);
+        [l.locals.clone(), l.central.clone(), end(l.central.len() as u32, l.locals.len() as u32)].concat()
+    };
+    let types = || Part::deflated("[Content_Types].xml", b"<Types/>");
+    // The review's proof of concept: one entry in all, two on this disk, the
+    // second a movie the guard never saw; then a zip bomb as the second.
+    let counted = ended(&[types(), Part::stored("ppt/media/evil.mp4", b"\0\0\0\x18ftypisom")], &|size, at| fx::end_record(2, 1, size, at, b""));
+    let counted_bomb = ended(&[types(), Part::deflated("ppt/slides/slide1.xml", &vec![0u8; 16 << 20])], &|size, at| fx::end_record(2, 1, size, at, b""));
+    // A directory shorter, or longer, than its end record declares.
+    let short = ended(&[types(), Part::stored("ppt/slides/slide1.xml", b"<p:sld/>")], &|size, at| fx::end_record(2, 2, size - 10, at, b""));
+    let long = ended(&[types(), Part::stored("ppt/slides/slide1.xml", b"<p:sld/>")], &|size, at| fx::end_record(2, 2, size + 10, at, b""));
+    // Two end records; one hidden in the other's comment.
+    let two = ended(&[types()], &|size, at| [fx::end_record(1, 1, size, at, b""), fx::end_record(1, 1, size, at, b"")].concat());
+    let hidden = ended(&[types()], &|size, at| fx::end_record(1, 1, size, at, &[fx::end_record(1, 1, size, at, b""), b"pad".to_vec()].concat()));
+    // Data before the zip: its offsets counting from the zip's start, or
+    // from the file's.
+    let prepended = [b"PK\x03\x04 prepended".to_vec(), fx::package(vec![], "")].concat();
+    let shifted = {
+        let junk = b"PK\x03\x04 prepended".to_vec();
+        let l = fx::layout_from(&[types()], junk.len() as u32);
+        let at = (junk.len() + l.locals.len()) as u32;
+        [junk, l.locals.clone(), l.central.clone(), fx::end_record(1, 1, l.central.len() as u32, at, b"")].concat()
+    };
     vec![
         ("bomb.pptx", bomb, "held"),
         ("liar.pptx", liar, "damaged"),
         ("many.pptx", many, "held"),
         ("nested.pptx", nested, "held"),
         ("workbook_bomb.pptx", workbook_bomb, "held"),
+        ("counted.pptx", counted, "damaged"),
+        ("counted_bomb.pptx", counted_bomb, "damaged"),
+        ("short.pptx", short, "damaged"),
+        ("long.pptx", long, "damaged"),
+        ("two_ends.pptx", two, "damaged"),
+        ("hidden_end.pptx", hidden, "damaged"),
+        ("prepended.pptx", prepended, "damaged"),
+        ("shifted.pptx", shifted, "damaged"),
         ("media.pptx", media, "held"),
         ("locked.pptx", fx::ole(&["EncryptionInfo", "EncryptedPackage"]), "protected"),
         ("legacy.ppt", fx::ole(&["PowerPoint Document", "Current User"]), "unsupported"),
@@ -651,6 +684,16 @@ fn hit_testing_a_shape_its_text_and_its_handles() {
     assert_eq!((handle["hit"]["kind"].clone(), handle["hit"]["id"].clone()), (json!("resize"), json!(rect)), "{handle}");
     assert!(handle["hit"]["handle"].is_u64());
     coded(&w.err("hit", json!({ "doc": doc, "slide": ids[4], "at": [1, 1], "selected": [999_999] })), "unknown_id");
+    // An empty selection is no selection: the corner is the shape again,
+    // not a handle, and a tap in it still finds the shape.
+    let corner = json!({ "doc": doc, "slide": ids[4], "at": [150, 460] });
+    let unselected = w.ok("hit", corner.clone());
+    assert_ne!(unselected["hit"]["kind"], "resize", "{unselected}");
+    let mut empty = corner;
+    empty["selected"] = json!([]);
+    assert_eq!(w.ok("hit", empty), unselected);
+    let tap = w.ok("hit", json!({ "doc": doc, "slide": ids[4], "at": [100, 430], "selected": [] }));
+    assert_eq!(tap["hit"]["id"], json!(rect), "{tap}");
     assert_eq!(w.ok("state", json!({ "doc": doc }))["edited"], false, "a hit changes nothing");
 }
 
@@ -1521,6 +1564,15 @@ fn the_picture_reads_take_pictures_only() {
     let e = w.err("insert", json!({ "doc": doc, "slide": s, "kind": "picture", "path": "bomb.png" }));
     coded(&e, "too_large");
     assert!(e.contains("20000 × 20000"), "{e}");
+    // A picture whose header doesn't say its size fails closed: a PNG cut
+    // inside its header, a JPEG with no frame.
+    w.put("cut.png", &png()[..20]);
+    w.put("frameless.jpg", b"\xFF\xD8\xFF\xE0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xFF\xD9");
+    for odd in ["cut.png", "frameless.jpg"] {
+        let e = w.err("insert", json!({ "doc": doc, "slide": s, "kind": "picture", "path": odd }));
+        coded(&e, "invalid");
+        assert!(e.contains("can't read the picture's size"), "{e}");
+    }
     assert_eq!(w.ok("state", json!({ "doc": doc }))["rev"], 0, "nothing reached the deck");
     assert_eq!(pictures::dimensions(&png()), Some((12, 8)));
 }

@@ -96,14 +96,26 @@ pub(crate) fn engine(method: &str, id: &str, e: &EngineError) -> String {
     }
 }
 
-/// A refusal from the area's write rules (`octosense_engine_area`): over the
-/// quota is `storage_full:`, anything else (a name that is taken, a folder
-/// in the way) `invalid:`.
+/// A refusal from the area's write rules (`octosense_engine_area`): its
+/// quota refusal (`octosense_engine_area::no_room`, the area's own test of
+/// its own words) is `storage_full:`, and so is a disk that is full, which
+/// the area passes on in the system's words (`ENOSPC`); anything else (a
+/// name that is taken, a folder in the way) is `invalid:`.
 pub(crate) fn area(words: impl Display) -> String {
     let words = words.to_string();
-    if words.contains("bytes left in this storage") || words.contains("No space left") {
+    if octosense_engine_area::no_room(&words) || words.contains("No space left") {
         fail(Code::StorageFull, words)
     } else {
         invalid(words)
+    }
+}
+
+/// An error of the service's own file write: a full disk or quota
+/// (`io::ErrorKind::StorageFull`, `QuotaExceeded`) is `storage_full:`,
+/// anything else as [`area`].
+pub(crate) fn io(words: impl Display, e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded => fail(Code::StorageFull, format!("{words}: {e}")),
+        _ => area(format!("{words}: {e}")),
     }
 }

@@ -55,7 +55,7 @@ fn place(area: &Area, files: &[(PathBuf, &[u8])], m: &str) -> Result<(), String>
     let mut moves = Vec::with_capacity(files.len());
     for (k, (dest, bytes)) in files.iter().enumerate() {
         let staged = stage.path(format!("{k}"));
-        std::fs::write(&staged, bytes).map_err(|e| codes::area(format!("{m}: {e}")))?;
+        std::fs::write(&staged, bytes).map_err(|e| codes::io(m, &e))?;
         moves.push((staged, dest.clone()));
     }
     let freed: u64 = if area.may_replace { files.iter().map(|(d, _)| cache::regular_len(d)).sum() } else { 0 };

@@ -38,6 +38,14 @@ deckcraft-fonts = { workspace = true }
 # The import guard inflates every zip entry, bounded, to check it is no
 # bigger than its directory says before the engine reads it (src/guard.rs).
 flate2 = "1"
+# The engine's own zip reader, which the import guard asks to read every
+# directory it passes, so the two never read a zip differently
+# (src/guard.rs `read_alike`): deckcraft's own version and features
+# (its root Cargo.toml), which a test keeps the same crate in Cargo.lock.
+zip = { version = "3", default-features = false, features = ["deflate"] }
+# The engine's sniffer for an Office package (the guard classifies a zip
+# as the engine's `open_presentation` does).
+deckcraft-pptx = { workspace = true }
 
 [dev-dependencies]
 # Generates and checks the skill's references (tests/skill.rs).

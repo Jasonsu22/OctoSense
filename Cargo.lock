@@ -11570,6 +11570,7 @@ dependencies = [
  "deckcraft-fonts",
  "deckcraft-format",
  "deckcraft-model",
+ "deckcraft-pptx",
  "flate2",
  "makepad-widgets",
  "octosense-app-policy",
@@ -11578,6 +11579,7 @@ dependencies = [
  "octosense-skill-gen",
  "serde_json",
  "tempfile",
+ "zip 3.0.0",
 ]
 
 [[package]]

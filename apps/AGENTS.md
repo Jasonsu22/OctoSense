@@ -96,7 +96,15 @@ app's own agent and `tools.json`, the system toolbox, `glance.publish` and
   `deck.cover`, the file methods, the agent's tools), the import guard
   (`src/guard.rs`, #448) reads the zip's central directory within bounds
   (10,000 entries, names of 1,024 bytes, 64 MiB an entry, 256 MiB in all,
-  100:1 past 100 KiB), inflates every entry against its declared size and
+  100:1 past 100 KiB) and only in a shape the engine's own zip reader
+  takes the same way (one end record, ending the file; entry counts that
+  agree; a directory filling exactly the space it declares; nothing before
+  the first entry; every extra field as that reader reads it, refusing
+  whatever it would refuse), then has that reader, the `zip` crate
+  deckcraft opens decks with, read the directory too and refuses any
+  difference (`damaged:`), so the guard checks exactly what the engine
+  will read. It classifies the zip with the engine's own sniffers,
+  inflates every entry against its declared size and
   refuses a nested zip or an audio or video part (`held:`), an encrypted
   `.pptx` (`protected:`) and a legacy `.ppt` or any other file it does not
   know (`unsupported:`); engine-side bounds stay with #448. The one nested

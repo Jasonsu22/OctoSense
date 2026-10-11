@@ -259,14 +259,18 @@ pub(crate) fn shapes_exist(doc: &OpenDoc, i: usize, ids: &[u32]) -> Result<(), S
     }
 }
 
-/// `deck.hit {doc, slide, at, tol?, selected?}`.
+/// `deck.hit {doc, slide, at, tol?, selected?}`. An empty `selected` is no
+/// selection, as a missing one is.
 pub(crate) fn hit(a: &Json, cx: &Call) -> Result<Json, String> {
     const M: &str = "deck.hit";
     args::only(a, &["doc", "slide", "at", "tol", "selected"], M)?;
     let id = args::id(a, "slide", M)?;
     let at = args::opt_point(a, "at", M)?.ok_or_else(|| invalid(format!("{M} needs `at`, [x, y] in points")))?;
     let tol = args::opt_num(a, "tol", M, 0.0, 100.0)?.unwrap_or(4.0);
-    let selected = args::opt_ids(a, "selected", M, MAX_SHAPES)?;
+    let selected = match args::present(a, "selected") {
+        Some(Json::Array(list)) if list.is_empty() => None,
+        _ => args::opt_ids(a, "selected", M, MAX_SHAPES)?,
+    };
     docs::with_doc(a, cx, M, |doc| {
         let i = doc.slide_index(id)?;
         let mut cmds = vec![("slide.go", json!({ "index": i }))];

@@ -16,12 +16,27 @@
 //!   declaring over [`MAX_ENTRY_BYTES`] uncompressed, at most
 //!   [`MAX_TOTAL_BYTES`] declared in all, and no entry past [`RATIO_GRACE`]
 //!   compressing more than [`MAX_RATIO`] to 1 (Apache POI's zip-bomb rule).
-//!   Over any of those is `held:`. A directory that does not parse, an
-//!   entry outside the file, an encrypted entry or one compressed in a way
-//!   the engine does not read is `damaged:`.
-//! - Then its names say what it is: a native deck (a `mimetype` entry
-//!   naming deckcraft's type) or an Office package (`[Content_Types].xml`).
-//!   Any other zip (`.key`, `.odp`) is `unsupported:`.
+//!   Over any of those is `held:`.
+//! - **Read alike.** The guard only checks what the engine will read if it
+//!   reads the zip exactly as the engine's zip reader does (the `zip` crate
+//!   behind deckcraft's package and native readers), so it takes the zip
+//!   only in a shape no two readers can take differently ([`directory`]):
+//!   the last end record, its comment ending the file, with no second end
+//!   record after it; its entry counts agreeing (on this disk and in all,
+//!   in the ZIP64 record too); the directory filling exactly the space it
+//!   declares, up to the end record or the ZIP64 record, every header in
+//!   it and every entry before it, the first at the very start of the file
+//!   (nothing prepended); every extra field read as that reader reads it.
+//!   Then that reader itself reads the directory ([`read_alike`]), and
+//!   anything it sees differently (where the zip starts, where its
+//!   directory is, how many entries, an entry's name, sizes, offsets,
+//!   method) refuses the file. Any of this, a directory that does not
+//!   parse, an entry outside the file, an encrypted entry or one
+//!   compressed in a way the engine does not read is `damaged:`.
+//! - Then the engine's own sniffers say what it is, in the engine's order:
+//!   a native deck (`deckcraft_format::sniff`) or an Office package
+//!   (`deckcraft_pptx::sniff`). Any other zip (`.key`, `.odp`) is
+//!   `unsupported:`.
 //! - Then every entry is inflated, bounded, into a scratch buffer (nothing
 //!   is kept but its first bytes): one that inflates past its declared size
 //!   is `damaged:`. Any audio or video part is `held:`, found by its
@@ -47,7 +62,9 @@
 //! service's 64 MiB a file). Beyond the directory's entries it allocates a
 //! 64 KiB inflate buffer, the package's content-type list (at most
 //! [`MAX_TYPES_BYTES`]) and, for an OLE file, a sector table of at most one
-//! entry a sector. Engine-side bounds stay tracked in #448.
+//! entry a sector; the engine's zip reader, run on a directory the guard
+//! has bounded, holds one record an entry. Engine-side bounds stay tracked
+//! in #448.
 
 use std::io::Read;
 
@@ -72,9 +89,10 @@ pub(crate) const MAX_TYPES_BYTES: u64 = 1 << 20;
 /// What the engine will be asked to read, once the guard passed the file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Format {
-    /// deckcraft's own `.deckcraft` zip.
+    /// deckcraft's own `.deckcraft` zip, as `deckcraft_format::sniff` finds it.
     Native,
-    /// An Office Open XML package (`.pptx`).
+    /// An Office Open XML package (`.pptx`), as `deckcraft_pptx::sniff`
+    /// finds it.
     Pptx,
     /// Outline text (`.txt`, `.md`).
     Outline,
@@ -83,12 +101,6 @@ pub(crate) enum Format {
 /// The OLE compound file signature: a legacy Office file, or an encrypted
 /// Office Open XML one.
 const OLE: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
-
-/// deckcraft's native `mimetype`s (`deckcraft_format::MIMETYPE`, and the
-/// type of files written before its rename).
-fn native_mimetype(content: &[u8]) -> bool {
-    content == deckcraft_format::MIMETYPE.as_bytes() || content == deckcraft_format::LEGACY_MIMETYPE.as_bytes()
-}
 
 /// Check `bytes`, the file at `name` (storage-relative, only its extension
 /// is used), before the engine reads it. `Ok` says how the engine will read
@@ -142,10 +154,14 @@ fn u64_at(b: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(b.get(at..at.checked_add(8)?)?.try_into().ok()?))
 }
 
-/// One entry of a zip's central directory.
+/// One entry of a zip's central directory, as the guard reads it, which is
+/// how the engine's zip reader must read it too ([`read_alike`]).
 #[derive(Debug)]
 struct Entry {
+    /// The name as the checks match it and an error shows it.
     name: String,
+    /// The name's bytes as stored.
+    raw: Vec<u8>,
     flags: u16,
     method: u16,
     compressed: u64,
@@ -154,14 +170,17 @@ struct Entry {
 }
 
 impl Entry {
-    fn is_dir(&self) -> bool {
-        self.name.ends_with('/')
-    }
-
     fn extension(&self) -> String {
         let file = self.name.rsplit('/').next().unwrap_or("");
         file.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default()
     }
+}
+
+/// A zip's central directory: its entries, and where it starts.
+#[derive(Debug)]
+struct Directory {
+    entries: Vec<Entry>,
+    start: usize,
 }
 
 const EOCD: u32 = 0x0605_4b50;
@@ -170,15 +189,45 @@ const ZIP64_EOCD: u32 = 0x0606_4b50;
 const CENTRAL: u32 = 0x0201_4b50;
 const LOCAL: u32 = 0x0403_4b50;
 
-/// The central directory, read with the bounds of the module doc.
-fn directory(b: &[u8]) -> Result<Vec<Entry>, String> {
+/// The central directory, read with the bounds of the module doc, and only
+/// in a shape that the engine's zip reader takes exactly as the guard does.
+///
+/// Every rule the guard adds beyond its bounds closes a way two readers
+/// part (the reviewed reader is the `zip` crate, 3.0.0: `read.rs`
+/// `get_metadata`, `spec.rs` `find_central_directory`):
+///
+/// - It takes the last end record whose comment ends the file, and refuses
+///   any second end record after it, in its comment or overlapping it: the
+///   reader searches backwards from the end of the file and tries the last
+///   one first.
+/// - The entries on this disk and the entries in all agree: the reader
+///   counts the first (zip32) or the second (ZIP64), the guard the same
+///   number either way.
+/// - The directory fills exactly the space its end record declares, from
+///   its offset up to the end record (or the ZIP64 record), every header
+///   inside it: nothing past the last header the count names, and nothing
+///   the guard leaves unread.
+/// - Every entry starts before the directory, and the first at the very
+///   start of the file: data put before the zip would make the reader
+///   move every offset (its archive offset), the guard none.
+/// - Whatever that reader refuses in this end record, the ZIP64 record or
+///   a header, the guard refuses first: a reader that refuses the end
+///   record it found searches backwards for another one, reading counts
+///   the guard never saw. So the ZIP64 record ends exactly at its locator
+///   and asks for no newer version than wrote it, every disk number is 0,
+///   no entry is encrypted or compressed other than stored or deflated,
+///   and every extra field is one that reader takes ([`extras`]).
+fn directory(b: &[u8]) -> Result<Directory, String> {
     let unreadable = || damaged("the presentation's zip directory can't be read");
-    // The end record: the last one in the final 64 KiB (its comment's most).
+    let parts = |what: &str| damaged(format!("the presentation's zip {what}, which zip readers take differently, so the deck service does not open it (#448)"));
+    let disks = || damaged("the presentation's zip spans several disks");
+    // The end record: the last one in the final 64 KiB (its comment's most)
+    // whose comment ends the file.
     let lowest = b.len().saturating_sub(22 + 0xFFFF);
     let mut at = None;
     let mut i = b.len().checked_sub(22).ok_or_else(unreadable)?;
     loop {
-        if u32_at(b, i) == Some(EOCD) && u16_at(b, i + 20).is_some_and(|c| i + 22 + c as usize <= b.len()) {
+        if u32_at(b, i) == Some(EOCD) && u16_at(b, i + 20).is_some_and(|c| i + 22 + c as usize == b.len()) {
             at = Some(i);
             break;
         }
@@ -188,30 +237,63 @@ fn directory(b: &[u8]) -> Result<Vec<Entry>, String> {
         i -= 1;
     }
     let eocd = at.ok_or_else(unreadable)?;
+    if b[eocd + 1..].windows(4).any(|w| w == EOCD.to_le_bytes()) {
+        return Err(parts("has a second end record in its comment"));
+    }
     let field16 = |o: usize| u16_at(b, eocd + o).ok_or_else(unreadable);
     let field32 = |o: usize| u32_at(b, eocd + o).ok_or_else(unreadable);
     if field16(4)? != 0 || field16(6)? != 0 {
-        return Err(damaged("the presentation's zip spans several disks"));
+        return Err(disks());
     }
-    let mut count = field16(10)? as u64;
+    let (on_disk, total) = (field16(8)?, field16(10)?);
+    if on_disk != total {
+        return Err(parts(&format!("counts {total} entries in all but {on_disk} on this disk")));
+    }
+    let mut count = total as u64;
     let mut size = field32(12)? as u64;
     let mut start = field32(16)? as u64;
-    if count == 0xFFFF || size == 0xFFFF_FFFF || start == 0xFFFF_FFFF {
-        // ZIP64: the locator just before the end record names the record.
+    // Where the directory must end: at the end record, or at the ZIP64 one.
+    let mut directory_end = eocd;
+    // ZIP64, when the reader looks for it (`may_be_zip64`): the entry count
+    // or the directory's offset at its most. Its locator is just before the
+    // end record and names the record.
+    if total == 0xFFFF || start == 0xFFFF_FFFF {
         let locator = eocd.checked_sub(20).filter(|l| u32_at(b, *l) == Some(ZIP64_LOCATOR)).ok_or_else(unreadable)?;
+        if u32_at(b, locator + 4) != Some(0) || u32_at(b, locator + 16).is_none_or(|n| n > 1) {
+            return Err(disks());
+        }
         let record = usize::try_from(u64_at(b, locator + 8).ok_or_else(unreadable)?).map_err(|_| unreadable())?;
         if u32_at(b, record) != Some(ZIP64_EOCD) {
             return Err(unreadable());
         }
-        count = u64_at(b, record + 32).ok_or_else(unreadable)?;
+        let record_size = u64_at(b, record + 4).ok_or_else(unreadable)?;
+        if record_size < 44 || (record as u64).checked_add(12).and_then(|r| r.checked_add(record_size)) != Some(locator as u64) {
+            return Err(unreadable());
+        }
+        if u16_at(b, record + 14).ok_or_else(unreadable)? > u16_at(b, record + 12).ok_or_else(unreadable)? {
+            return Err(parts("asks for a newer zip version than the one that wrote it"));
+        }
+        if u32_at(b, record + 16) != Some(0) || u32_at(b, record + 20) != Some(0) {
+            return Err(disks());
+        }
+        let (on_disk, total) = (u64_at(b, record + 24).ok_or_else(unreadable)?, u64_at(b, record + 32).ok_or_else(unreadable)?);
+        if on_disk != total {
+            return Err(parts(&format!("counts {total} entries in all but {on_disk} on this disk")));
+        }
+        count = total;
         size = u64_at(b, record + 40).ok_or_else(unreadable)?;
         start = u64_at(b, record + 48).ok_or_else(unreadable)?;
+        directory_end = record;
     }
     if count > MAX_ENTRIES as u64 {
         return Err(held(format!("the presentation's zip has {count} entries, more than the {MAX_ENTRIES} the deck service opens (#448)")));
     }
     let start = usize::try_from(start).map_err(|_| unreadable())?;
-    let end = start.checked_add(usize::try_from(size).map_err(|_| unreadable())?).filter(|e| *e <= b.len()).ok_or_else(unreadable)?;
+    let end = start.checked_add(usize::try_from(size).map_err(|_| unreadable())?).ok_or_else(unreadable)?;
+    let misplaced = || damaged("the presentation's zip directory isn't the size and place its end record declares");
+    if end != directory_end {
+        return Err(misplaced());
+    }
     let mut entries = Vec::with_capacity(count as usize);
     let mut total: u64 = 0;
     let mut p = start;
@@ -236,42 +318,17 @@ fn directory(b: &[u8]) -> Result<Vec<Entry>, String> {
         if next > end {
             return Err(unreadable());
         }
-        let name = String::from_utf8_lossy(&b[name_at..extra_at]).into_owned();
-        // ZIP64 sizes and offset, for the fields their 32-bit slot marks.
-        if compressed == 0xFFFF_FFFF || declared == 0xFFFF_FFFF || offset == 0xFFFF_FFFF {
-            let mut e = extra_at;
-            let extra_end = extra_at + extra_len;
-            let mut found = false;
-            while e + 4 <= extra_end {
-                let id = u16_at(b, e).ok_or_else(unreadable)?;
-                let len = u16_at(b, e + 2).ok_or_else(unreadable)? as usize;
-                let body = e + 4;
-                if body + len > extra_end {
-                    return Err(unreadable());
-                }
-                if id == 0x0001 {
-                    let mut q = body;
-                    let mut take = |slot: &mut u64| -> Result<(), String> {
-                        if *slot == 0xFFFF_FFFF {
-                            if q + 8 > body + len {
-                                return Err(unreadable());
-                            }
-                            *slot = u64_at(b, q).ok_or_else(unreadable)?;
-                            q += 8;
-                        }
-                        Ok(())
-                    };
-                    take(&mut declared)?;
-                    take(&mut compressed)?;
-                    take(&mut offset)?;
-                    found = true;
-                    break;
-                }
-                e = body + len;
-            }
-            if !found {
-                return Err(unreadable());
-            }
+        let raw = b[name_at..extra_at].to_vec();
+        let name = String::from_utf8_lossy(&raw).into_owned();
+        if flags & 1 != 0 {
+            return Err(damaged(format!("`{}` in the presentation's zip is encrypted, which the deck engine doesn't read", shown(&name))));
+        }
+        if method != 0 && method != 8 {
+            return Err(damaged(format!("`{}` in the presentation's zip is compressed with method {method}, which the deck engine doesn't read", shown(&name))));
+        }
+        extras(b, extra_at, extra_at + extra_len, [&mut declared, &mut compressed, &mut offset], &name)?;
+        if offset >= start as u64 {
+            return Err(damaged(format!("`{}` in the presentation's zip starts after the zip's directory", shown(&name))));
         }
         if declared > MAX_ENTRY_BYTES {
             return Err(held(format!(
@@ -289,14 +346,90 @@ fn directory(b: &[u8]) -> Result<Vec<Entry>, String> {
                 shown(&name)
             )));
         }
-        entries.push(Entry { name, flags, method, compressed, declared, offset });
+        entries.push(Entry { name, raw, flags, method, compressed, declared, offset });
         p = next;
     }
-    Ok(entries)
+    if p != end {
+        return Err(misplaced());
+    }
+    if entries.iter().map(|e| e.offset).min().is_some_and(|first| first != 0) {
+        return Err(parts("has data before its first entry"));
+    }
+    Ok(Directory { entries, start })
 }
 
-/// Where `e`'s data lies in `b`, from its local header.
-fn data_of<'a>(b: &'a [u8], e: &Entry) -> Result<&'a [u8], String> {
+/// An entry's extra field (`b[from..to]`), read as the engine's zip reader
+/// reads it (`zip` 3.0.0, `read::parse_single_extra_field`), so that reader
+/// takes the very entries the guard checked, with the same sizes and
+/// offset (`slots`: uncompressed, compressed, offset, as the header gave
+/// them):
+///
+/// - ZIP64 (`0x0001`): a field of 24 bytes or more gives all three values,
+///   whatever the header's 32-bit fields say; a shorter one gives those
+///   whose 32-bit field is at its most, in that order. A field too short
+///   for what it must give is `damaged:`.
+/// - NTFS times (`0x000a`) and extended times (`0x5455`) pass only in the
+///   shapes that reader takes; any other is `damaged:`.
+/// - AES (`0x9901`), and Info-ZIP's Unicode path and comment (`0x7075`,
+///   `0x6375`), are `damaged:`: the first is encryption, and the second
+///   would rename the entry for the engine after the guard checked its
+///   name.
+/// - A field that runs past the extra field is `damaged:`.
+///
+/// Other fields that reader skips, and so does the guard.
+fn extras(b: &[u8], from: usize, to: usize, slots: [&mut u64; 3], name: &str) -> Result<(), String> {
+    let refused = |what: &str| damaged(format!("`{}` in the presentation's zip has {what}, which the deck service does not open (#448)", shown(name)));
+    let [declared, compressed, offset] = slots;
+    let mut e = from;
+    while e < to {
+        let broken = || refused("a broken extra field");
+        if e + 4 > to {
+            return Err(broken());
+        }
+        let kind = u16_at(b, e).ok_or_else(broken)?;
+        let len = u16_at(b, e + 2).ok_or_else(broken)? as usize;
+        let body = e + 4;
+        let next = body + len;
+        if next > to {
+            return Err(broken());
+        }
+        match kind {
+            0x0001 => {
+                let all = len >= 24;
+                let mut q = body;
+                for slot in [&mut *declared, &mut *compressed, &mut *offset] {
+                    if all || *slot == 0xFFFF_FFFF {
+                        if q + 8 > next {
+                            return Err(refused("a ZIP64 field of the wrong length"));
+                        }
+                        *slot = u64_at(b, q).ok_or_else(broken)?;
+                        q += 8;
+                    }
+                }
+            }
+            0x000a => {
+                if len != 32 || u16_at(b, body + 4) != Some(1) || u16_at(b, body + 6) != Some(24) {
+                    return Err(refused("an NTFS time field the deck engine's zip reader refuses"));
+                }
+            }
+            0x5455 => {
+                let flags = if len >= 1 { b[body] } else { 0xFF };
+                if !(len == 5 || len == 1 + 4 * flags.count_ones() as usize) || flags & 0xF8 != 0 {
+                    return Err(refused("an extended time field the deck engine's zip reader refuses"));
+                }
+            }
+            0x9901 => return Err(refused("AES encryption")),
+            0x6375 | 0x7075 => return Err(refused("an Info-ZIP Unicode name or comment")),
+            _ => {}
+        }
+        e = next;
+    }
+    Ok(())
+}
+
+/// Where `e`'s data begins in `b`: past its local header, by that header's
+/// own name and extra lengths, as the engine's zip reader finds it.
+fn data_start(b: &[u8], e: &Entry) -> Result<usize, String> {
     let outside = || damaged(format!("`{}` lies outside the presentation's zip", shown(&e.name)));
     let at = usize::try_from(e.offset).map_err(|_| outside())?;
     if u32_at(b, at) != Some(LOCAL) {
@@ -304,9 +437,60 @@ fn data_of<'a>(b: &'a [u8], e: &Entry) -> Result<&'a [u8], String> {
     }
     let name_len = u16_at(b, at + 26).ok_or_else(outside)? as usize;
     let extra_len = u16_at(b, at + 28).ok_or_else(outside)? as usize;
-    let start = at + 30 + name_len + extra_len;
+    Ok(at + 30 + name_len + extra_len)
+}
+
+/// Where `e`'s data lies in `b`.
+fn data_of<'a>(b: &'a [u8], e: &Entry) -> Result<&'a [u8], String> {
+    let outside = || damaged(format!("`{}` lies outside the presentation's zip", shown(&e.name)));
+    let start = data_start(b, e)?;
     let len = usize::try_from(e.compressed).map_err(|_| outside())?;
     b.get(start..start.checked_add(len).ok_or_else(outside)?).ok_or_else(outside)
+}
+
+/// The engine's own zip reader must read the directory exactly as the
+/// guard did: the `zip` crate that deckcraft's package and native readers
+/// open every deck with (`ZipArchive::new`, its default configuration; the
+/// same crate and version, which a test checks in `Cargo.lock`). It runs
+/// only after [`directory`] bounded the directory and refused everything
+/// that reader would refuse in it, so the reader takes that very end
+/// record and never looks for another, and it reads the directory and each
+/// entry's local header, never an entry's data. Anything the reader sees
+/// differently (data before the zip, another directory, another number of
+/// entries, an entry's name, sizes, offset, where its data begins, its
+/// method or encryption) is `damaged:`.
+fn read_alike(b: &[u8], dir: &Directory) -> Result<(), String> {
+    let differs = |what: String| damaged(format!("the deck engine's zip reader reads the presentation differently ({what}), so the deck service does not open it (#448)"));
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(b)).map_err(|e| damaged(format!("the deck engine's zip reader can't read the presentation: {e}")))?;
+    if z.offset() != 0 {
+        return Err(differs(format!("{} bytes before the zip", z.offset())));
+    }
+    if z.central_directory_start() != dir.start as u64 {
+        return Err(differs("another directory".into()));
+    }
+    if z.len() != dir.entries.len() {
+        return Err(differs(format!("{} entries, not {}", z.len(), dir.entries.len())));
+    }
+    for (i, e) in dir.entries.iter().enumerate() {
+        let start = data_start(b, e)? as u64;
+        let f = z.by_index_raw(i).map_err(|err| damaged(format!("the deck engine's zip reader can't read `{}`: {err}", shown(&e.name))))?;
+        let method = match f.compression() {
+            zip::CompressionMethod::Stored => Some(0),
+            zip::CompressionMethod::Deflated => Some(8),
+            _ => None,
+        };
+        let alike = f.name_raw() == e.raw.as_slice()
+            && f.compressed_size() == e.compressed
+            && f.size() == e.declared
+            && f.header_start() == e.offset
+            && f.data_start() == start
+            && method == Some(e.method)
+            && !f.encrypted();
+        if !alike {
+            return Err(differs(format!("`{}`", shown(&e.name))));
+        }
+    }
+    Ok(())
 }
 
 /// What an entry turned out to hold: its first bytes, and the whole of it
@@ -535,34 +719,32 @@ const NATIVE_MEDIA_TYPES: &[&[u8]] = &[b"\"contentType\":\"audio/", b"\"contentT
 
 /// The guard for a zip (module doc).
 fn zip(b: &[u8]) -> Result<Format, String> {
-    let entries = directory(b)?;
-    // What it is, by its names (and a native deck's `mimetype`).
-    let native = match entries.iter().find(|e| e.name == "mimetype") {
-        Some(e) if e.declared <= 256 => native_mimetype(&inflate(b, e, true, &mut |_| {})?.kept.unwrap_or_default()),
-        _ => false,
-    };
-    let package = entries.iter().find(|e| e.name.eq_ignore_ascii_case("[Content_Types].xml"));
-    let format = if native {
+    let dir = directory(b)?;
+    read_alike(b, &dir)?;
+    let entries = &dir.entries;
+    // What it is, by the engine's own sniffers in the engine's order
+    // (`deckcraft_engine::cmd::file::open_presentation`).
+    let format = if deckcraft_format::sniff(b) {
         Format::Native
-    } else if package.is_some() {
+    } else if deckcraft_pptx::sniff(b) {
         Format::Pptx
     } else {
         return Err(fail(Code::Unsupported, "this zip is not a presentation the deck engine reads (.pptx or .deckcraft)"));
     };
-    // The package's declared content types.
-    let (defaults, overrides) = match (format, package) {
-        (Format::Pptx, Some(types)) => {
+    // The content types a package declares, whichever reader takes it.
+    let (defaults, overrides) = match entries.iter().find(|e| e.name.eq_ignore_ascii_case("[Content_Types].xml")) {
+        Some(types) => {
             if types.declared > MAX_TYPES_BYTES {
                 return Err(held(format!("the presentation's content-type list is larger than the {MAX_TYPES_BYTES} bytes the deck service reads (#448)")));
             }
             let xml = inflate(b, types, true, &mut |_| {})?.kept.unwrap_or_default();
             content_types(&String::from_utf8_lossy(&xml))
         }
-        _ => (Vec::new(), Vec::new()),
+        None => (Vec::new(), Vec::new()),
     };
-    for e in entries.iter().filter(|e| !e.is_dir()) {
+    for e in entries {
         let mut scan = Scan::new(NATIVE_MEDIA_TYPES);
-        let watch_json = format == Format::Native && e.name == "presentation.json";
+        let watch_json = e.name == "presentation.json";
         let inflated = inflate(b, e, false, &mut |chunk| {
             if watch_json {
                 scan.feed(chunk)
@@ -682,14 +864,22 @@ pub(crate) mod fixtures {
         pub deflate: bool,
         /// The uncompressed size the directory declares, when it lies.
         pub declared: Option<u64>,
+        /// The name's bytes, when they are not `name`'s.
+        pub raw_name: Option<Vec<u8>>,
+        /// The general-purpose flags (bit 11: the name is UTF-8).
+        pub flags: u16,
+        /// The central header's extra field.
+        pub extra: Vec<u8>,
+        /// Only a local header and data, which no central header names.
+        pub hidden: bool,
     }
 
     impl Part {
         pub(crate) fn stored(name: &str, data: &[u8]) -> Part {
-            Part { name: name.into(), data: data.to_vec(), deflate: false, declared: None }
+            Part { name: name.into(), data: data.to_vec(), deflate: false, declared: None, raw_name: None, flags: 0, extra: Vec::new(), hidden: false }
         }
         pub(crate) fn deflated(name: &str, data: &[u8]) -> Part {
-            Part { name: name.into(), data: data.to_vec(), deflate: true, declared: None }
+            Part { deflate: true, ..Part::stored(name, data) }
         }
     }
 
@@ -704,26 +894,37 @@ pub(crate) mod fixtures {
         !crc
     }
 
-    /// A zip of `parts`, honest unless a part says otherwise.
-    pub(crate) fn zip(parts: &[Part]) -> Vec<u8> {
+    /// `data` deflated as a part with `deflate` is.
+    pub(crate) fn deflate(data: &[u8]) -> Vec<u8> {
+        let mut e = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    /// A zip's two halves: its entries (local headers and data) and its
+    /// central directory, which names `count` of them.
+    pub(crate) struct Layout {
+        pub locals: Vec<u8>,
+        pub central: Vec<u8>,
+        pub count: u16,
+    }
+
+    /// The entries and central directory of `parts`, honest unless a part
+    /// says otherwise, as if `base` bytes came before them.
+    pub(crate) fn layout_from(parts: &[Part], base: u32) -> Layout {
         let mut out = Vec::new();
         let mut central = Vec::new();
+        let mut count = 0u16;
         for p in parts {
-            let body = if p.deflate {
-                let mut e = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
-                e.write_all(&p.data).unwrap();
-                e.finish().unwrap()
-            } else {
-                p.data.clone()
-            };
+            let body = if p.deflate { deflate(&p.data) } else { p.data.clone() };
             let crc = crc32(&p.data);
             let declared = p.declared.unwrap_or(p.data.len() as u64) as u32;
             let method: u16 = if p.deflate { 8 } else { 0 };
-            let offset = out.len() as u32;
-            let name = p.name.as_bytes();
+            let offset = base + out.len() as u32;
+            let name = p.raw_name.clone().unwrap_or_else(|| p.name.as_bytes().to_vec());
             out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
             out.extend_from_slice(&20u16.to_le_bytes());
-            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&p.flags.to_le_bytes());
             out.extend_from_slice(&method.to_le_bytes());
             out.extend_from_slice(&0u16.to_le_bytes());
             out.extend_from_slice(&0x21u16.to_le_bytes());
@@ -732,12 +933,16 @@ pub(crate) mod fixtures {
             out.extend_from_slice(&declared.to_le_bytes());
             out.extend_from_slice(&(name.len() as u16).to_le_bytes());
             out.extend_from_slice(&0u16.to_le_bytes());
-            out.extend_from_slice(name);
+            out.extend_from_slice(&name);
             out.extend_from_slice(&body);
+            if p.hidden {
+                continue;
+            }
+            count += 1;
             central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
             central.extend_from_slice(&20u16.to_le_bytes());
             central.extend_from_slice(&20u16.to_le_bytes());
-            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&p.flags.to_le_bytes());
             central.extend_from_slice(&method.to_le_bytes());
             central.extend_from_slice(&0u16.to_le_bytes());
             central.extend_from_slice(&0x21u16.to_le_bytes());
@@ -745,21 +950,70 @@ pub(crate) mod fixtures {
             central.extend_from_slice(&(body.len() as u32).to_le_bytes());
             central.extend_from_slice(&declared.to_le_bytes());
             central.extend_from_slice(&(name.len() as u16).to_le_bytes());
-            central.extend_from_slice(&[0u8; 12]);
+            central.extend_from_slice(&(p.extra.len() as u16).to_le_bytes());
+            central.extend_from_slice(&[0u8; 10]);
             central.extend_from_slice(&offset.to_le_bytes());
-            central.extend_from_slice(name);
+            central.extend_from_slice(&name);
+            central.extend_from_slice(&p.extra);
         }
-        let start = out.len() as u32;
-        let count = parts.len() as u16;
-        out.extend_from_slice(&central);
+        Layout { locals: out, central, count }
+    }
+
+    /// [`layout_from`] at the start of the file.
+    pub(crate) fn layout(parts: &[Part]) -> Layout {
+        layout_from(parts, 0)
+    }
+
+    /// An end record: `on_disk` and `total` entries, a directory of `size`
+    /// bytes at `offset`, and `comment`.
+    pub(crate) fn end_record(on_disk: u16, total: u16, size: u32, offset: u32, comment: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
         out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
         out.extend_from_slice(&[0u8; 4]);
-        out.extend_from_slice(&count.to_le_bytes());
-        out.extend_from_slice(&count.to_le_bytes());
-        out.extend_from_slice(&(central.len() as u32).to_le_bytes());
-        out.extend_from_slice(&start.to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&on_disk.to_le_bytes());
+        out.extend_from_slice(&total.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&offset.to_le_bytes());
+        out.extend_from_slice(&(comment.len() as u16).to_le_bytes());
+        out.extend_from_slice(comment);
         out
+    }
+
+    /// A zip of `parts`, honest unless a part says otherwise.
+    pub(crate) fn zip(parts: &[Part]) -> Vec<u8> {
+        let l = layout(parts);
+        let end = end_record(l.count, l.count, l.central.len() as u32, l.locals.len() as u32, b"");
+        [l.locals, l.central, end].concat()
+    }
+
+    /// A ZIP64 zip of `parts`: its directory named by a ZIP64 end record
+    /// (counting `on_disk` and `total` entries, needing version `needed`)
+    /// and its locator, the end record's own fields at their most.
+    pub(crate) fn zip64(parts: &[Part], on_disk: u64, total: u64, needed: u16) -> Vec<u8> {
+        let l = layout(parts);
+        let record_at = (l.locals.len() + l.central.len()) as u64;
+        let mut record = Vec::new();
+        record.extend_from_slice(&0x0606_4b50u32.to_le_bytes());
+        record.extend_from_slice(&44u64.to_le_bytes());
+        record.extend_from_slice(&45u16.to_le_bytes());
+        record.extend_from_slice(&needed.to_le_bytes());
+        record.extend_from_slice(&[0u8; 8]);
+        record.extend_from_slice(&on_disk.to_le_bytes());
+        record.extend_from_slice(&total.to_le_bytes());
+        record.extend_from_slice(&(l.central.len() as u64).to_le_bytes());
+        record.extend_from_slice(&(l.locals.len() as u64).to_le_bytes());
+        let mut locator = Vec::new();
+        locator.extend_from_slice(&0x0706_4b50u32.to_le_bytes());
+        locator.extend_from_slice(&0u32.to_le_bytes());
+        locator.extend_from_slice(&record_at.to_le_bytes());
+        locator.extend_from_slice(&1u32.to_le_bytes());
+        let end = end_record(0xFFFF, 0xFFFF, 0xFFFF_FFFF, 0xFFFF_FFFF, b"");
+        [l.locals, l.central, record, locator, end].concat()
+    }
+
+    /// One extra field: `kind`, then `body`.
+    pub(crate) fn field(kind: u16, body: &[u8]) -> Vec<u8> {
+        [kind.to_le_bytes().as_slice(), (body.len() as u16).to_le_bytes().as_slice(), body].concat()
     }
 
     /// An Office package's content-type list and its first part.
@@ -779,8 +1033,9 @@ pub(crate) mod fixtures {
     pub(crate) fn with_parts(bytes: &[u8], extra: Vec<Part>) -> Vec<u8> {
         let mut parts: Vec<Part> = super::directory(bytes)
             .unwrap()
+            .entries
             .iter()
-            .filter(|e| !e.is_dir())
+            .filter(|e| !e.name.ends_with('/'))
             .map(|e| Part::deflated(&e.name, &super::inflate(bytes, e, true, &mut |_| {}).unwrap().kept.unwrap()))
             .collect();
         parts.extend(extra);
@@ -840,7 +1095,7 @@ pub(crate) mod fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::{native, ole, package, zip, Part};
+    use super::fixtures::{end_record, field, layout, layout_from, native, ole, package, zip, zip64, Part};
     use super::*;
 
     #[track_caller]
@@ -988,6 +1243,163 @@ mod tests {
         assert!(e.contains("video or audio"), "by the manifest's content type: {e}");
         // A type declared for an extension no part has is no media.
         assert_eq!(check("deck.pptx", &package(vec![], "<Default Extension=\"wav\" ContentType=\"audio/wav\"/>")), Ok(Format::Pptx));
+    }
+
+    /// The two parts every package below starts with.
+    fn head() -> Vec<Part> {
+        vec![Part::deflated("[Content_Types].xml", b"<Types/>"), Part::deflated("ppt/presentation.xml", b"<p:presentation/>")]
+    }
+
+    /// `l`'s entries and directory, then `end`.
+    fn with_end(l: &super::fixtures::Layout, end: Vec<u8>) -> Vec<u8> {
+        [l.locals.clone(), l.central.clone(), end].concat()
+    }
+
+    #[test]
+    fn the_readers_never_part_on_the_entry_count() {
+        // The review's proof of concept: the end record counts one entry in
+        // all and two on this disk. The guard read one ([Content_Types].xml)
+        // and the engine's zip reader two, the second a movie.
+        let parts = vec![Part::deflated("[Content_Types].xml", b"<Types/>"), Part::stored("ppt/media/evil.mp4", b"\0\0\0\x18ftypisom")];
+        let l = layout(&parts);
+        let (size, at) = (l.central.len() as u32, l.locals.len() as u32);
+        let poc = with_end(&l, end_record(2, 1, size, at, b""));
+        let engine = zip::ZipArchive::new(std::io::Cursor::new(&poc)).unwrap();
+        assert_eq!((engine.len(), engine.name_for_index(1)), (2, Some("ppt/media/evil.mp4")), "the engine's zip reader sees the movie");
+        let e = coded(check("poc.pptx", &poc), "damaged");
+        assert!(e.contains("1 entries in all but 2 on this disk"), "{e}");
+        coded(check("poc.pptx", &with_end(&l, end_record(1, 2, size, at, b""))), "damaged");
+        // The same with a zip bomb as the hidden entry.
+        let parts = vec![Part::deflated("[Content_Types].xml", b"<Types/>"), Part::deflated("ppt/slides/slide1.xml", &vec![0u8; 16 << 20])];
+        let l = layout(&parts);
+        coded(check("poc.pptx", &with_end(&l, end_record(2, 1, l.central.len() as u32, l.locals.len() as u32, b""))), "damaged");
+        // ZIP64: an honest record passes; its counts disagreeing, or a
+        // record asking for a newer version than wrote it, does not.
+        assert_eq!(check("big.pptx", &zip64(&head(), 2, 2, 45)), Ok(Format::Pptx));
+        let e = coded(check("big.pptx", &zip64(&head(), 3, 2, 45)), "damaged");
+        assert!(e.contains("2 entries in all but 3 on this disk"), "{e}");
+        coded(check("big.pptx", &zip64(&head(), 2, 3, 45)), "damaged");
+        coded(check("big.pptx", &zip64(&head(), 2, 2, 46)), "damaged");
+    }
+
+    #[test]
+    fn the_directory_fills_exactly_what_its_end_record_declares() {
+        let mut parts = head();
+        parts.push(Part::stored("ppt/slides/slide1.xml", b"<p:sld/>"));
+        let l = layout(&parts);
+        let (size, at) = (l.central.len() as u32, l.locals.len() as u32);
+        assert_eq!(check("ok.pptx", &with_end(&l, end_record(3, 3, size, at, b""))), Ok(Format::Pptx));
+        // Declared shorter, or longer, than the headers there.
+        let e = coded(check("short.pptx", &with_end(&l, end_record(3, 3, size - 10, at, b""))), "damaged");
+        assert!(e.contains("size and place"), "{e}");
+        coded(check("long.pptx", &with_end(&l, end_record(3, 3, size + 10, at, b""))), "damaged");
+        // A header past the count: two counted, three there.
+        let e = coded(check("past.pptx", &with_end(&l, end_record(2, 2, size, at, b""))), "damaged");
+        assert!(e.contains("size and place"), "{e}");
+        // A directory that starts elsewhere than where it is.
+        coded(check("moved.pptx", &with_end(&l, end_record(3, 3, size, at - 1, b""))), "damaged");
+    }
+
+    #[test]
+    fn one_end_record_ends_the_file() {
+        let l = layout(&head());
+        let (size, at) = (l.central.len() as u32, l.locals.len() as u32);
+        let end = end_record(2, 2, size, at, b"");
+        assert_eq!(check("note.pptx", &with_end(&l, end_record(2, 2, size, at, b"made by hand"))), Ok(Format::Pptx));
+        // Two end records, back to back.
+        coded(check("two.pptx", &[with_end(&l, end.clone()), end.clone()].concat()), "damaged");
+        // One hidden in the other's comment, which a reader searching from
+        // the end of the file would try first.
+        let comment = [end.clone(), b"pad".to_vec()].concat();
+        let e = coded(check("hidden.pptx", &with_end(&l, end_record(2, 2, size, at, &comment))), "damaged");
+        assert!(e.contains("second end record"), "{e}");
+        coded(check("hidden.pptx", &with_end(&l, end_record(2, 2, size, at, &end))), "damaged");
+        // Anything after the comment.
+        coded(check("tail.pptx", &[with_end(&l, end), b"tail".to_vec()].concat()), "damaged");
+    }
+
+    #[test]
+    fn nothing_comes_before_the_zip() {
+        // Data before a zip whose offsets count from the zip's own start:
+        // the engine's zip reader would move every offset, the guard none.
+        let z = package(vec![], "");
+        coded(check("junk.pptx", &[b"PK\x03\x04 prepended".to_vec(), z.clone()].concat()), "damaged");
+        // Data before a zip whose offsets count from the file's start.
+        let junk = b"PK\x03\x04 prepended".to_vec();
+        let l = layout_from(&head(), junk.len() as u32);
+        let at = (junk.len() + l.locals.len()) as u32;
+        let shifted = [junk, l.locals.clone(), l.central.clone(), end_record(2, 2, l.central.len() as u32, at, b"")].concat();
+        let e = coded(check("before.pptx", &shifted), "damaged");
+        assert!(e.contains("data before its first entry"), "{e}");
+        // Data that isn't even a zip's start makes no zip.
+        coded(check("exe.pptx", &[b"MZ\x90\0".to_vec(), z].concat()), "unsupported");
+    }
+
+    #[test]
+    fn extra_fields_read_as_the_engines_zip_reader_reads_them() {
+        let with = |extra: Vec<u8>| package(vec![Part { extra, ..Part::stored("ppt/slides/slide1.xml", b"<p:sld/>") }], "");
+        let ntfs = |tag: u16, size: u16| field(0x000a, &[vec![0u8; 4], tag.to_le_bytes().to_vec(), size.to_le_bytes().to_vec(), vec![0u8; 24]].concat());
+        let times = |flags: u8, len: usize| field(0x5455, &[vec![flags], vec![0u8; len - 1]].concat());
+        // The shapes that reader takes, and a field it skips, pass.
+        for extra in [ntfs(1, 24), times(1, 5), times(3, 9), times(7, 5), field(0xCAFE, b"ok")] {
+            assert_eq!(check("t.pptx", &with(extra)), Ok(Format::Pptx));
+        }
+        // The ones it refuses, the guard refuses first.
+        for extra in [ntfs(2, 24), ntfs(1, 16), times(1, 9), times(0x09, 5), field(0x9901, &[2, 0, 0x41, 0x45, 3, 8, 0]), [field(0xCAFE, b"ok"), vec![1, 2]].concat()] {
+            coded(check("t.pptx", &with(extra)), "damaged");
+        }
+        // Info-ZIP's Unicode path would rename the entry for the engine.
+        let e = coded(check("t.pptx", &with(field(0x7075, &[1, 0, 0, 0, 0, b'x']))), "damaged");
+        assert!(e.contains("Unicode"), "{e}");
+        coded(check("t.pptx", &with(field(0x6375, &[1, 0, 0, 0, 0, b'x']))), "damaged");
+        // A field running past the extra field.
+        coded(check("t.pptx", &with([0xCAFEu16.to_le_bytes(), 9u16.to_le_bytes()].concat())), "damaged");
+        // ZIP64: a field of 24 bytes gives all three values over the 32-bit
+        // ones, to the engine's reader and so to the guard. Here it moves an
+        // innocent slide onto a movie no header names, which the guard then
+        // finds as that reader would.
+        let movie = b"\0\0\0\x18ftypisom-a-movie".to_vec();
+        let n = movie.len() as u64;
+        let moved = field(0x0001, &[n.to_le_bytes(), n.to_le_bytes(), 0u64.to_le_bytes()].concat());
+        let parts = vec![
+            Part { hidden: true, ..Part::stored("hidden.bin", &movie) },
+            Part::deflated("[Content_Types].xml", b"<Types/>"),
+            Part::deflated("ppt/presentation.xml", b"<p:presentation/>"),
+            Part { extra: moved, ..Part::stored("ppt/slides/slide1.xml", b"<p:sld/>") },
+        ];
+        let e = coded(check("moved.pptx", &zip(&parts)), "held");
+        assert!(e.contains("video or audio") && e.contains("ppt/slides/slide1.xml"), "{e}");
+        // And a ZIP64 field too short for what it must give.
+        let short = Part { declared: Some(0xFFFF_FFFF), extra: field(0x0001, &[0u8; 4]), ..Part::stored("ppt/x.xml", b"x") };
+        coded(check("short.pptx", &package(vec![short], "")), "damaged");
+    }
+
+    #[test]
+    fn what_the_engines_zip_reader_sees_differently_is_refused() {
+        // "é" in UTF-8 (flagged) and in code page 437 (not flagged): one name
+        // to the engine's zip reader, which keeps the second's data under it,
+        // and two to the guard.
+        let utf8 = Part { flags: 1 << 11, ..Part::stored("ppt/é.xml", b"<a/>") };
+        let cp437 = Part { raw_name: Some(b"ppt/\x82.xml".to_vec()), ..Part::stored("ppt/cp437.xml", b"<b/>") };
+        let e = coded(check("twins.pptx", &package(vec![utf8, cp437], "")), "damaged");
+        assert!(e.contains("reads the presentation differently") && e.contains("3 entries, not 4"), "{e}");
+        // The same name twice.
+        coded(check("twice.pptx", &package(vec![Part::stored("ppt/a.xml", b"1"), Part::stored("ppt/a.xml", b"2")], "")), "damaged");
+    }
+
+    /// The guard's reader of record is the engine's own: the deck service
+    /// links the very `zip` crate deckcraft's package and native readers do.
+    #[test]
+    fn the_guard_reads_alike_with_the_engines_own_zip_crate() {
+        let lock = include_str!("../../../../Cargo.lock");
+        let zip_of = |package: &str| -> String {
+            let block = lock.split("[[package]]").find(|b| b.contains(&format!("name = \"{package}\"\n"))).unwrap_or_else(|| panic!("{package} is not in Cargo.lock"));
+            let deps = block.split("dependencies = [").nth(1).unwrap_or_else(|| panic!("{package} has no dependencies"));
+            deps.lines().map(|l| l.trim().trim_matches(|c| c == '"' || c == ',')).find(|d| *d == "zip" || d.starts_with("zip ")).unwrap_or_else(|| panic!("{package} has no zip")).to_string()
+        };
+        let ours = zip_of("octosense-deck-service");
+        assert_eq!(ours, zip_of("deckcraft-pptx"));
+        assert_eq!(ours, zip_of("deckcraft-format"));
     }
 
     #[test]
