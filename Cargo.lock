@@ -2693,6 +2693,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9244323129647178bf41ac861a2cdb9d9c81b9b09d3d0d1de9cd302b33b8a1d"
 
 [[package]]
+name = "deckcraft-anim"
+version = "0.3.0"
+source = "git+https://github.com/ymote/deckcraft.git?rev=d0e57d7e25f9852179cc66be12dd6188f1c05535#d0e57d7e25f9852179cc66be12dd6188f1c05535"
+dependencies = [
+ "deckcraft-geom",
+ "deckcraft-model",
+ "serde",
+]
+
+[[package]]
 name = "deckcraft-av1"
 version = "0.3.0"
 source = "git+https://github.com/ymote/deckcraft.git?rev=d0e57d7e25f9852179cc66be12dd6188f1c05535#d0e57d7e25f9852179cc66be12dd6188f1c05535"
@@ -11555,9 +11565,13 @@ dependencies = [
 name = "octosense-deck-service"
 version = "0.1.0"
 dependencies = [
+ "deckcraft-anim",
  "deckcraft-engine",
+ "deckcraft-fonts",
  "deckcraft-format",
  "deckcraft-model",
+ "flate2",
+ "makepad-widgets",
  "octosense-app-policy",
  "octosense-appstore",
  "octosense-engine-area",

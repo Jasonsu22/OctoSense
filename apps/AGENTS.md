@@ -60,6 +60,65 @@ app's own agent and `tools.json`, the system toolbox, `glance.publish` and
   Deck, `apps/quickdeck/bundle`, desktop only, whose own `deck.*` calls work
   in its storage; its dev fixture is in apps/README.md):
   `apps/deck/host-service` and `cargo test --locked -p octosense-deck-service`.
+  Besides the file methods (`info`, `text`, `render`, `new`, `convert`,
+  `run`; the system agent's two tools, `deck.info` and `deck.run`, stay as
+  they are), it serves Quick Deck v2's open documents to apps' own
+  requests, as `apps/quickdeck/design/SERVICE.md` specifies; change that
+  contract and the service together. `deck.open` and `deck.create` keep
+  the engine's session for a deck, its edits and undo history, under a
+  handle, on the pdf service's terms (`src/docs.rs`): a document belongs to
+  the caller app, its storage scope and the handle (anyone else's is
+  `unknown_doc:`), a caller keeps at most 8 open and the process 32, the
+  table is a `thread_local` on the UI thread, the listener on App Hub's
+  `services::on_isolate_closed` releases a closing isolate's documents and
+  their renders, every call sweeps for a changed storage scope, and a
+  caller with no isolate gets a 15-minute idle bound. Each method builds
+  every engine command and its parameters itself and refuses a key it does
+  not take, then runs them through one gate (`src/gate.rs`): the door
+  `deck.run` uses, with the same `REVIEWED` limits, held commands and run
+  ceilings, admits the whole call before any command runs
+  (`Door::admit_method` in `crates/engine-area`, with the method's own most
+  commands a call, its reason beside its constant), the ceilings on the
+  session hold after every command, and a refused command puts the
+  document back as it was. `shape.fill` and `design.background` (`file`)
+  run for a method only without `picture` or `path` (`UNREAD`,
+  `door::Unread`), so the service never has them read a file, and
+  `deck.run` still refuses them; `insert.picture` and `picture.change`
+  read a picture inside the storage only, checked first
+  (`src/pictures.rs`). A change method is one undo step, labelled, of at
+  most 100: the engine's own steps for its commands are folded through its
+  `History`, and a call that changes nothing adds none. `rev` and
+  `changed` come from the engine's copy-on-write slide pointers, compared
+  by content where the engine copied a slide it did not change. Text is
+  exact (the session's autocorrect and smart quotes are off), and
+  `deck.set_text` replaces only the span that changed, so the rest keeps
+  its formatting. Before the engine reads a byte of a file (`deck.open`,
+  `deck.cover`, the file methods, the agent's tools), the import guard
+  (`src/guard.rs`, #448) reads the zip's central directory within bounds
+  (10,000 entries, names of 1,024 bytes, 64 MiB an entry, 256 MiB in all,
+  100:1 past 100 KiB), inflates every entry against its declared size and
+  refuses a nested zip or an audio or video part (`held:`), an encrypted
+  `.pptx` (`protected:`) and a legacy `.ppt` or any other file it does not
+  know (`unsupported:`); engine-side bounds stay with #448. Present's order
+  and build steps (`deck.show`, `deck.view {step}`) come from
+  deckcraft-anim at the engine's pin. Caps: drawing 48–3840 px wide, 4096
+  a side and 16 MP, 500 shapes or slides named a call, 1,024 table cells
+  filled, 20,000 characters of notes, 50 MP a picture, a PDF ≤ 160 MP and
+  an image export ≤ 64 slides and 256 MP (checked before anything is
+  written), and a render cache of 16 MiB and 64 files: slide drawings in
+  `.cache/slides/<handle>/`, and, from `deck.cover` (a file method for
+  apps, no agent tool), each deck's first slide in `.cache/covers/`, at
+  most 32, kept across closes and named by the file's name, size and
+  modification time (`src/covers.rs`). Slide drawings go before covers,
+  each oldest first, and the whole cache is cleared before a write would
+  fail with `storage_full:`. Errors start with a stable code
+  (`src/codes.rs`). Every call first waits for a warm-up that is still
+  running (`src/warm.rs`): deckcraft's font database cannot load one
+  family on two threads at once, and a slide drawn during that race kept
+  the last-resort face. `src/doc_tests.rs` holds its tests, and
+  `cargo test --release --locked -p octosense-deck-service --lib --
+  --ignored timings` times a 30-slide deck's open, first drawing and
+  edits.
   The cad engine's (cadcraft behind `cad.*`, same ADR, no bundle yet):
   `apps/cad/host-service` and `cargo test --locked -p octosense-cad-service`.
   The light engine's (lightcraft behind `light.*`, same ADR, no bundle yet):
