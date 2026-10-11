@@ -7,6 +7,7 @@ import io
 import json
 from pathlib import Path
 import re
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -49,6 +50,111 @@ class OpenHarmonyIconTests(unittest.TestCase):
                     for target, name in mapping.items():
                         self.assertEqual((base / target).read_bytes(), (source / name).read_bytes())
             self.assertEqual((entry_media / "unrelated.png").read_bytes(), b"keep")
+
+
+class OpenHarmonyLaunchParameterTests(unittest.TestCase):
+    """Any app can start Home's exported ability with parameters, and Makepad
+    turns each `makepad.*` one into environment variables: only a development
+    build passes them on."""
+
+    def test_the_product_ability_forwards_none_by_default(self):
+        source = (ROOT.parent / "phone/ohos/EntryAbility.ets").read_text()
+        self.assertEqual(source.count(ohos.FORWARD_LAUNCH_PARAMETERS), 1)
+        self.assertLess(source.index("if (FORWARD_LAUNCH_PARAMETERS)"), source.index("want.parameters"),
+                        "the parameters are read only behind the switch")
+
+    def test_only_a_dev_mode_build_forwards_them(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            staged = project / "entry/src/main/ets/entryability/EntryAbility.ets"
+            ohos.stage_entry_ability(project, ROOT.parent / "phone", False)
+            self.assertEqual(staged.read_text(), (ROOT.parent / "phone/ohos/EntryAbility.ets").read_text())
+            ohos.stage_entry_ability(project, ROOT.parent / "phone", True)
+            text = staged.read_text()
+            self.assertIn("const FORWARD_LAUNCH_PARAMETERS: boolean = true;", text)
+            self.assertNotIn(ohos.FORWARD_LAUNCH_PARAMETERS, text)
+
+    def test_a_dev_mode_build_needs_its_own_bundle_id(self):
+        argv = ["build-home-ohos.py", "--deveco-home", "/deveco", "--signing-config", "/private/signing.json",
+                "--packager", "/tools/cargo-makepad", "--dev-mode"]
+        with mock.patch.object(sys, "argv", argv), contextlib.redirect_stderr(io.StringIO()) as err, \
+                self.assertRaises(SystemExit):
+            ohos.main()
+        self.assertIn("separate --bundle-id", err.getvalue())
+
+
+class DevelopmentPackageTests(unittest.TestCase):
+    """`--dev-mode`: a development test package, the only Android build that
+    takes launch-time test hooks."""
+
+    def args(self, *extra):
+        return build.arguments(["--sdk", "/sdk", "--android-sdk", "/android", *extra])
+
+    def dev(self, *extra):
+        return self.args("--variant", "standalone", "--development", "--dev-mode",
+                         "--package-name", "dev.makepad.octosense.devtest", *extra)
+
+    def test_it_needs_a_separate_test_package(self):
+        for package in (None, "dev.makepad.octosense", "dev.makepad.octosense.bridge", "dev.makepad.octosense.quickstep",
+                        "dev.makepad.octosense.agent", "com.example.home", "dev.makepad.octosense.Test", "dev.makepad.octosense."):
+            extra = ("--package-name", package) if package else ()
+            with self.subTest(package=package), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                self.args("--variant", "standalone", "--development", "--dev-mode", *extra)
+
+    def test_it_is_a_standalone_development_build_only(self):
+        package = ("--package-name", "dev.makepad.octosense.devtest")
+        for extra in (("--variant", "rom", "--sign-key", "/keys/platform.pk8", "--sign-cert", "/keys/platform.x509.pem"),
+                      ("--variant", "standalone", "--sign-key", "/keys/app.pk8", "--sign-cert", "/keys/app.x509.pem")):
+            with self.subTest(extra=extra), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                self.args(*extra, "--dev-mode", *package)
+        for extra in (package, ("--app-label", "OctoSenseLab")):
+            with self.subTest(extra=extra), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                self.args("--variant", "standalone", "--development", *extra)
+        for label in ("Octo Sense", "1Home", "Home-Test", "x" * 65):
+            with self.subTest(label=label), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                self.dev("--app-label", label)
+
+    def test_the_plan_builds_home_alone_with_the_feature(self):
+        args = self.dev("--packager", "/tools/cargo-makepad", "--no-octos-kernel", "--version-code", "2026101100")
+        plan = build.build_plan(args)
+        gradle, android = plan[-2][1], plan[-1][1]
+        self.assertIn(":contracts:exportHomeContracts", gradle)
+        self.assertNotIn(":system-bridge:assembleRelease", gradle)
+        self.assertLess(android.index("--package-name=dev.makepad.octosense.devtest"), android.index("build"))
+        self.assertLess(android.index("--app-label=OctoSenseDev"), android.index("build"))
+        self.assertEqual(android[android.index("build"):], ["build", "-p", "octosense-home", "--release", "--locked",
+                                                           "--features", "dev-mode"])
+        self.assertEqual(build.apk_inputs(args), {
+            "OctoSenseHome.apk": ROOT.parent / "phone/target/android/makepad-android-apk/octosense_home/apk/octo_sense_dev.apk"})
+        self.assertEqual(build.artifact_names(args), ["OctoSenseHome.apk", "build.json"])
+        self.assertEqual(args.output, ROOT / "out/home/dev/dev.makepad.octosense.devtest")
+
+    def test_release_builds_never_take_the_feature(self):
+        for extra in (("--variant", "standalone", "--development"),
+                      ("--variant", "rom", "--sign-key", "/keys/platform.pk8", "--sign-cert", "/keys/platform.x509.pem")):
+            args = self.args(*extra, "--packager", "/tools/cargo-makepad", "--no-octos-kernel")
+            plan = build.build_plan(args)
+            android = plan[-1][1]
+            with self.subTest(extra=extra):
+                self.assertFalse(any("dev-mode" in arg or arg.startswith("--package-name") for arg in android))
+                self.assertIn(":system-bridge:assembleRelease", plan[-2][1])
+                self.assertEqual(sorted(build.apk_inputs(args)), ["OctoSenseBridge.apk", "OctoSenseHome.apk"])
+                self.assertEqual(build.apk_inputs(args)["OctoSenseHome.apk"].name, "octo_sense.apk")
+
+    def test_apk_names_follow_cargo_makepad(self):
+        for label, name in (("OctoSense", "octo_sense"), ("OctoSenseNotesTest", "octo_sense_notes_test"),
+                            ("OctoSenseDev", "octo_sense_dev"), ("Lab2", "lab2")):
+            self.assertEqual(build.apk_basename(label), name)
+
+    def test_the_built_package_must_be_the_requested_one(self):
+        args = self.dev("--version-code", "2026101100")
+        artifacts = {"OctoSenseHome.apk": {"package_name": "dev.makepad.octosense.devtest", "version_code": 2026101100,
+                                           "version_name": "0.1.0", "certificate_sha256": "a" * 64}}
+        build.verify_dev_package(artifacts, args)
+        for field, value in (("package_name", "dev.makepad.octosense"), ("version_code", 1)):
+            altered = {"OctoSenseHome.apk": dict(artifacts["OctoSenseHome.apk"], **{field: value})}
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                build.verify_dev_package(altered, args)
 
 
 class BuildTests(unittest.TestCase):
