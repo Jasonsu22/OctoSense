@@ -159,7 +159,7 @@ reach: photocraft alone has 817 commands.
   Beside it are references generated from the engine at its pin: the
   command catalog `commands.md`, one line per id, for the ten engines that
   have a catalog (photo, word, deck, cad, light, design, film, effect,
-  vector, pdf; 4,557 ids in all), light's `controls.md` and sheet's
+  vector, pdf; 4,569 ids in all), light's `controls.md` and sheet's
   `functions.md`. Each service embeds its skill (`src/skill.rs`), so a build
   ships the skill that matches its engine. The shell registers the linked
   engines' skills with the services' own gates
