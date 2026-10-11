@@ -6,11 +6,11 @@
 
 [宿主 OS API 状态](docs/host-os-api-status.zh-CN.md)记录文件、定位和外部链接支持，以及已有服务、剩余缺口和验证范围。
 
-[OctoSense Updates](docs/updater.zh-CN.md) 检查并下载经过校验的宿主发行版，再打开操作系统安装流程。此功能随本次变更引入；旧版本需要先手动升级一次。
+[OctoSense Updates](docs/updater.zh-CN.md) 检查并下载经过校验的宿主发行版，再打开操作系统安装流程。桌面 RC6 已发布此功能。RC5 及更早版本须先手动升级一次，才能用它更新后续版本。
 
 [能力声明与执行边界](docs/capabilities.zh-CN.md)说明声明式 API、用户同意、账户和应用隔离。
 
-**桌面预发布版下载**：[OctoSense 0.1.0-rc.4](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.4) 包含应用契约 1.11.0、共享 Wasm 组件、GitHub 证明应用安装，以及“能力仅用于声明”的公开 API 策略。请选择与操作系统和架构对应的文件；签名、前置条件及各平台验收限制见发行说明。此桌面版本不会更新 Android Home。
+**桌面预发布版下载：** [OctoSense 0.1.0-rc.6](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.6) 包含应用契约 1.12.0、WASI TCP/UDP/DNS、共享组件、GitHub 证明应用安装及 OctoSense Updates。请选择与操作系统和架构对应的安装包。发行说明记录了经过验证的校验和、GitHub 签名、各平台验收范围及剩余限制。此桌面发布不会更新 Android Home。
 
 用自己的邮箱[复现真实邮件 → 卡片 → Calendar 演示](docs/demos/mail-calendar/README.zh-CN.md)：固定源码版本、重要邮件策略、虚构测试输入、人工修改草稿和日历跳转。
 
@@ -28,7 +28,7 @@ OctoSense 是运行在普通操作系统之上的 Agent Shell。从屏幕上看�
 
 > **要开发 OctoSense 应用？** 开发、检查或发布应用都不需要本仓库。请从 [OctoSense App Flow](https://github.com/OctoSense-org/OctoSense-App-Flow)（原 Design Flow；先读 `AGENTS.md`，再读 `docs/QUICKSTART.md`）和 [OctoSense-App-Hub](https://github.com/OctoSense-org/OctoSense-App-Hub) 开始。[`apps/`](apps/README.zh-CN.md) 中的系统应用就是完整的示例。只有想在发布前先在 Shell 里试用自己的应用时，才需要从这里构建桌面端 Shell（[PUBLISHING §4](https://github.com/OctoSense-org/OctoSense-App-Flow/blob/main/docs/PUBLISHING.zh-CN.md#4-在本地演练商店流程)）。
 
-[原生图表 API](docs/charts.zh-CN.md) 介绍完整应用与 Glance 共用的 Makepad D3 组件、兼容性要求及数据处理限制。这项集成晚于桌面 RC4。
+[原生图表 API](docs/charts.zh-CN.md) 介绍完整应用与 Glance 共用的 Makepad D3 组件、兼容性要求及数据处理限制。桌面 RC6 已包含这项集成。
 
 Android 桌面支持从左右边缘滑动翻页、衔接松手速度的弹簧吸附，以及搜索和 Glance 列表的弹性滚动；应用和已展开卡片仍使用返回手势。参见[手机手势说明](phone/README.zh-CN.md#手势)。
 
@@ -52,9 +52,9 @@ Android 桌面支持从左右边缘滑动翻页、衔接松手速度的弹簧吸
 
 想按顺序读源码，请从[从应用窗口到 Agent 回合](docs/architecture-walkthrough.zh-CN.md)开始。[产品导读](desktop/docs/code-walkthrough.zh-CN.md)补充了各个产品的运行方式。
 
-连接账户的 App Hub 示例共用宿主持有的 GitHub/Google OAuth 服务，无需创建 OctoSense 账户。请从[服务与示例指南](crates/oauth-service/README.zh-CN.md)和 [ADR 0010](docs/adr/0010-shared-oauth-and-connected-apps.zh-CN.md)开始。GitHub Notes 复用 Rinx 的 Markdown 编辑器；Inbox Assistant 和 Google Calendar 都是普通应用包。**服务商登录需要发行方提供 OAuth 客户端注册信息。** RC2、RC1 和较早的 beta.2 下载包均未包含这些信息；RC4 发布工作流也未提供服务商注册信息。运维人员须提供私有宿主 `oauth/clients.json` 配置，或按[注册设置](crates/oauth-service/README.zh-CN.md#配置发行版本维护者)构建。从 App Hub 安装应用不会自动配置其服务商登录。普通应用用户应拿到已配置的发行包。真实 GitHub 和 Google 账户的登录已在 macOS 上通过，[macOS 测试账户的 Calendar 登录与保存](tools/connected-e2e/evidence/calendar-login-20261007.json)也已在收据记录的构建上通过，但这不代表 Google 已完成公开验证。GitHub 写入和 Gmail 发信仍未验证，Android 上的 Google 登录还需要原生授权适配器。
+连接账户的 App Hub 示例共用宿主持有的 GitHub/Google OAuth 服务，无需创建 OctoSense 账户。请从[服务与示例指南](crates/oauth-service/README.zh-CN.md)和 [ADR 0010](docs/adr/0010-shared-oauth-and-connected-apps.zh-CN.md)开始。GitHub Notes 复用 Rinx 的 Markdown 编辑器；Inbox Assistant 和 Google Calendar 都是普通应用包。**服务商登录需要发行方提供 OAuth 客户端注册信息。** RC2、RC1 和较早的 beta.2 下载包均未包含这些信息；RC6 发布工作流也未提供服务商注册信息。运维人员须提供私有宿主 `oauth/clients.json` 配置，或按[注册设置](crates/oauth-service/README.zh-CN.md#配置发行版本维护者)构建。从 App Hub 安装应用不会自动配置其服务商登录。普通应用用户应拿到已配置的发行包。真实 GitHub 和 Google 账户的登录已在 macOS 上通过，[macOS 测试账户的 Calendar 登录与保存](tools/connected-e2e/evidence/calendar-login-20261007.json)也已在收据记录的构建上通过，但这不代表 Google 已完成公开验证。GitHub 写入和 Gmail 发信仍未验证，Android 上的 Google 登录还需要原生授权适配器。
 
-此源码构建中的 App Hub 默认使用带 GitHub 证明的签名目录，并通过应用契约 1.11.0（桌面 RC2 为 1.10.0，RC1 为 1.8.0）支持 `publisher-github-v1` 的 Release。开发者通过 [App Hub 提交 issue](https://github.com/OctoSense-org/OctoSense-App-Hub/issues/new?template=submit-app.yml) 申请发布。App Hub 只接受带 GitHub 证明的 Release，因此开发者无需发布者密钥：应用的公开仓库就是它的发布者身份（[App Hub ADR 0002](https://github.com/OctoSense-org/OctoSense-App-Hub/blob/main/docs/adr/0002-github-attested-publisher-identity.zh-CN.md)）。准入仍须由 Hub 管理员批准。首次获取签名目录需要网络连接，旧的离线签名目录不会转换成 GitHub 证明。使用自定义的本地测试签名目录时，可以在全新的应用数据目录下显式设置 `OCTOSENSE_HUB_CATALOG=legacy`；已有 v2 缓存的应用库会拒绝这种降级。beta.2 不支持这种发布方式。RC2 可以安装与其兼容的 GitHub 证明应用；要求共享组件或更新宿主 API 的应用需要兼容的新宿主，详见[能力与发布状态](docs/capabilities.zh-CN.md)。
+此源码构建中的 App Hub 默认使用带 GitHub 证明的签名目录，并通过应用契约 1.12.0（桌面 RC2 为 1.10.0，RC1 为 1.8.0）支持 `publisher-github-v1` 的 Release。开发者通过 [App Hub 提交 issue](https://github.com/OctoSense-org/OctoSense-App-Hub/issues/new?template=submit-app.yml) 申请发布。App Hub 只接受带 GitHub 证明的 Release，因此开发者无需发布者密钥：应用的公开仓库就是它的发布者身份（[App Hub ADR 0002](https://github.com/OctoSense-org/OctoSense-App-Hub/blob/main/docs/adr/0002-github-attested-publisher-identity.zh-CN.md)）。准入仍须由 Hub 管理员批准。首次获取签名目录需要网络连接，旧的离线签名目录不会转换成 GitHub 证明。使用自定义的本地测试签名目录时，可以在全新的应用数据目录下显式设置 `OCTOSENSE_HUB_CATALOG=legacy`；已有 v2 缓存的应用库会拒绝这种降级。beta.2 不支持这种发布方式。RC2 可以安装与其兼容的 GitHub 证明应用；要求共享组件或更新宿主 API 的应用需要兼容的新宿主，详见[能力与发布状态](docs/capabilities.zh-CN.md)。
 
 ## 整体如何运作
 

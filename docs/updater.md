@@ -17,10 +17,12 @@ An installed RC defaults to the release-candidate channel. Versions compare
 numerically: `rc.10` follows `rc.9`, and the corresponding stable version follows
 its RCs. Switching channels does not permit a downgrade.
 
-This updater is introduced by this source change. Published desktop releases
-up to `0.1.0-rc.5` and Home `0.1.0-beta.2` do not contain it; install a newer
-release containing the updater once to get this interface. Unversioned development
-builds do not know their installed release and cannot offer an update.
+Desktop [RC6](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.6)
+is the first desktop release with this updater. Install RC6 manually once when
+coming from RC5 or earlier; use **OctoSense Updates** for subsequent eligible
+releases. Home `0.1.0-beta.2` does not contain the updater, and this desktop
+release does not update Home. Unversioned development builds do not know their
+installed release and cannot offer an update.
 
 ## Installation
 
@@ -155,27 +157,36 @@ missing-checksum fallback.
 ## Validation scope
 
 Desktop handoff tests check executable names and literal arguments without
-launching installers. Packaging tests verify identities, stale-binary refusal
-and build planning without producing release packages.
+launching installers. Packaging tests cover release identity and stale-binary
+refusal; signature tests cover certificate, transparency-log and GitHub claims,
+including tampered proofs and unexpected workflows, branches and subjects.
 
-The signature check is tested with a public Sigstore bundle: it verifies
-cryptographically, and is refused as another workflow's. Tampered signatures
-and transparency proofs, other workflows, branches, issuers and trust roots,
-every missing or wrong GitHub claim, and a statement naming another release or
-other bytes are refused too. The signing workflow's release check passed on
-the published `desktop-v0.1.0-rc.5` and `rc.2` and refused `beta.2`, which has
-no `SHA256SUMS`. No release has been signed yet, so a signed release checked
-end to end remains **unverified**, as does Android's real-tap check on a
-device. Removing stale downloads and the Linux copy into Downloads are tested
-in temporary folders; the actual Linux handoff remains **unverified**.
+[RC6](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.6)
+was built from `f9f6fea9` by the [official release workflow](https://github.com/OctoSense-org/OctoSense/actions/runs/38125407028)
+and signed by the [protected checksum workflow](https://github.com/OctoSense-org/OctoSense/actions/runs/38137543497)
+after normal reviewer approval. All ten final assets were downloaded and their
+digests checked. The exact RC6 verifier accepted its real signature and rejected
+modified checksums and a different release tag.
 
-A hidden native macOS UI checked the live RC1 → RC2 offer and downloaded and
-verified its 297 MB disk image. A deliberate change to that isolated download
-made **Install** reject it before any installer opened. Channel changes and
-download cancellation were exercised; the actual desktop shell also opened the
-Updates module and checked the live RC2 offer with an isolated profile.
-Replacing the installed macOS app remains **unverified**, as do real Windows
-and Linux installations.
+After publication, the exact-source updater Client, using a **synthetic RC5
+installed identity**, selected RC6 for macOS arm64, Windows x64, Linux DEB and
+Linux AppImage. It also downloaded and revalidated the macOS installer. This
+checks the new Client's offer and verification logic; RC5 itself has no updater.
+
+| Packaged runtime | Executed acceptance |
+| --- | --- |
+| macOS arm64 | Fresh public download; RC/Preview report up to date, Stable reports unavailable. Public App Hub search, installation, actual Repo Radar launch and restart persistence passed in an isolated profile. |
+| Linux x64 | Six native startup checks; live signed RC check reports up to date in an isolated DEB filesystem layout and extracted official AppImage. No system package installation or FUSE launch. |
+| Windows x64 | Official build and static archive, executable, resource and kernel-receipt checks. GUI installation and launch remain **unverified**. |
+
+Native installer handoff and replacing an installed desktop app remain
+**unverified** for RC6. Full installed-app workflows and model calls were not
+part of this release acceptance. Before signature enforcement was added,
+isolated macOS tests exercised an RC1 → RC2 download, tamper rejection,
+channel changes and cancellation; those are historical checks, not proof that
+unsigned older releases are accepted by RC6. Cleanup and Linux's copy into
+Downloads are tested in temporary folders. Android's real-tap check on a
+physical device remains **unverified**.
 
 On an owned API 35 Android emulator, a fixture using the actual Java updater
 adapter and OS PackageInstaller passed 25 acceptance checks, including cleanup: permission changes

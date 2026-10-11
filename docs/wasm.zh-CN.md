@@ -88,7 +88,9 @@ Rust crate 构建。服务按文件头区分两者，一个应用包可以同时
   或可信用户输入，只能调用允许后台使用的方法。`wasm.*`
   被拒绝，因为应用的工作线程正忙于这次调用；调用的截止时间限制等待时长。
 
-**套接字兼容性：** 此支持尚未发布，桌面 RC5 会拒绝套接字导入。应用包必须在 `requires` 中保留
+**套接字兼容性：** 桌面 [RC6](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.6)
+在 macOS、Windows 和 Linux 上包含 TCP、UDP 与 DNS 支持。桌面 RC5 会拒绝套接字导入。
+本次桌面发布不更新 Android Home。应用包必须在 `requires` 中保留
 `host-api-v1`、`wasm-components-v1`，并声明 `host_api.required: {"wasm.sockets": 1}`。
 SDK 检测到套接字导入时自动添加声明，App Hub 对内置组件和共享组件都进行验证。
 `wasm.sockets` 是运行时兼容性标记，不是可调用的 JSON 方法或权限。旧宿主仍能读取目录，
