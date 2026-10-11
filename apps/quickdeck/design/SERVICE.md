@@ -421,3 +421,16 @@ changes; where they differ from the sections above, they win.
   stays on the UI thread (#399).
 - **Dependencies.** `deckcraft-anim` and `deckcraft-fonts`, at the pinned
   deckcraft revision.
+- **Reading alike.** The import guard reads a zip only in a shape that it and
+  the engine's own `zip` reader read the same way (matching entry counts, the
+  directory filling exactly its declared span, the last end record, no data
+  before the zip, extra fields by the reader's own rules), then reads the
+  directory again with that reader and compares; any difference is
+  `damaged:`. A ZIP64 end record carries at most 1 KiB beyond its 44 bytes.
+- **The guard picks the reader.** A native deck is known by the engine's own
+  marker and an Office package by a `[Content_Types].xml` entry in the
+  directory the guard verified. That verdict picks the engine's reader, with
+  the same steps `open_presentation` takes after its own check, so a `.pptx`
+  whose content types come late (as LibreOffice writes them) opens.
+- **`deck.hit`** treats `selected: []` as no selection.
+- **Pictures** whose size can't be read are `invalid:`.
