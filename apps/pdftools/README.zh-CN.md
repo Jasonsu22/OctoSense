@@ -23,7 +23,7 @@ craft 引擎只在桌面版中提供（`craft-engines`）。
 | --- | --- |
 | 文档标签 | 显示主页时有 Home 标签，每个打开的 PDF 一个标签（名称、有未保存更改时的圆点、关闭叉号），以及前往主页的 Open |
 | 模式栏 | Read · Comment · Fill & Sign · Pages · Combine · Edit，当前模式带下划线；Search in document；Undo、Redo；Save |
-| 侧栏与左侧面板 | Pages（缩略图）、Outline（PDF 的书签）、Comments、Search（结果）；面板可以收起 |
+| 侧栏与左侧面板 | Pages（缩略图）、Outline（PDF 的书签）、Comments；面板可以收起。查找进行时，结果占用左侧面板（侧栏中没有项目高亮），查找结束后交还 |
 | 画布 | 页面以白色显示在桌面背景上：从你前往的那一页开始的至多八页，每页都是引擎按屏幕分辨率渲染的结果 |
 | 浮动控制条 | 页码“3 / 24”、上一页和下一页、缩小、缩放比例、放大、适合宽度、适合页面 |
 | 右侧面板 | Comment：评论线程。Fill & Sign：表单字段以及 Add text、Add date、Add initials。Edit：正在编辑的段落 |
@@ -48,7 +48,7 @@ PDF Tools 以 1296 x 703 点打开，应用区域为 1292 x 667，即它的宽�
 | --- | --- | --- |
 | 主页 | 最近的 PDF 以卡片显示首页、页数、大小和打开时间；Open a PDF from this device（最大 64 MB）；移除 PDF（会再确认一次）；首次运行时的空状态 | `pdf.open`、`pdf.info`、`pdf.page`、`pdf.close` |
 | Read | 页面按 72 dpi × 缩放 × 2 逐页渲染并保留；缩略图逐个填入；大纲可跳转到章节 | `pdf.open`、`pdf.page` |
-| 查找 | 在 Search in document 中输入后按 Return：“12 matches on 7 pages”，结果按页分组、匹配处加粗，每处匹配在页面上高亮，当前匹配更醒目，可前后切换 | `pdf.find` |
+| 查找 | Search in document 是唯一的查找入口，输入后按 Return：左侧面板显示“12 matches on 7 pages”，结果按页分组、匹配处加粗，每处匹配在页面上高亮，当前匹配更醒目，可前后切换。按 Done、结果面板的关闭按钮或搜索框的清除按钮结束查找后，左侧面板恢复之前显示的内容（之前的内容不明时显示 Pages）；文档发生更改时也以同样方式结束查找 | `pdf.find` |
 | Comment | 对点按的那一行做高亮、下划线或删除线（点按两次作用于整段），在点按处添加 Note 和 Text box，四种颜色可选；带回复、状态和删除的评论线程。评论使用在“Comment as”中保存的名字 | `pdf.lines`、`pdf.comments`、`pdf.comment` |
 | Fill & Sign | 用框线标出表单字段（未填的必填字段为红色）并列出其值；选中一个字段即可输入值；Add text、Add date 和 Add initials 会在点按处放置标记；姓名缩写会被保存 | `pdf.fields`、`pdf.fill`、`pdf.fill_sign` |
 | Pages | 每页一张大缩略图：选择页面，向左或向右旋转、删除、提取（在资料库中生成新 PDF）、从文件插入（这里的另一个 PDF），拖动页面以移动 | `pdf.pages` |
@@ -96,7 +96,8 @@ PDF to make room”）、已打开八个 PDF、关闭时有未保存的更改，
   查找结果、浮动控制条）时，先把画布绘制成空的一帧，使其滚动位置被限制回顶部，再填入从该页
   开始的一组页面。该页之前的页面可以用浮动控制条的上一页回去。
 - **脚本应用收不到键盘事件。** 需求中列出的每个快捷键（⌘F、⌘+ 和 ⌘−、⌘0、方向键、⌘Z、
-  ⇧⌘Z、⌘S）都改为按钮；Search in document 在按 Return 时执行，这是文本框会报告的事件。
+  ⇧⌘Z、⌘S）都改为按钮；⌘F 对应的就是 Search in document 搜索框本身，它在按 Return 时执行，
+  这是文本框唯一会报告的按键。
 - **状态保存在 `mod.pdftools` 上。** 切换浅色/深色会重新运行脚本（#440）；每个 `let` 都会
   重新开始，`mod` 保留下来，`resume()` 用新的外观重新绘制每个区域。
 - **在这个运行时中，Label 会把自己的 margin 和 padding 绘制两次**

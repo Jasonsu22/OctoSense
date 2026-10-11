@@ -27,7 +27,7 @@ decision that applies.
 | --- | --- |
 | Document tabs | Home while it shows, one tab per open PDF (its name, a dot while it has unsaved changes, a close cross), and Open, which goes to Home |
 | Mode bar | Read · Comment · Fill & Sign · Pages · Combine · Edit, the current one underlined; Search in document; Undo, Redo; Save |
-| Rail and left panel | Pages (thumbnails), Outline (the PDF's bookmarks), Comments, Search (the results); the panel folds away |
+| Rail and left panel | Pages (thumbnails), Outline (the PDF's bookmarks), Comments; the panel folds away. A search's results take the panel while it runs (no rail item is lit), and give it back when it ends |
 | Canvas | The pages, white on the desk: a run of up to eight pages from the page you went to, each the engine's render at screen resolution |
 | Pill | Page "3 / 24", previous and next, zoom out, zoom, zoom in, fit width, fit page |
 | Right panel | Comment: the threads. Fill & Sign: the form's fields and Add text, Add date, Add initials. Edit: the paragraph being edited |
@@ -59,7 +59,7 @@ page fits the canvas, up to 100%.
 | --- | --- | --- |
 | Home | Recent PDFs as cards with their first page, pages, size and when they were opened; Open a PDF from this device (up to 64 MB); remove a PDF (asks once more); an empty state on a first run | `pdf.open`, `pdf.info`, `pdf.page`, `pdf.close` |
 | Read | Pages render one at a time at 72 dpi x zoom x 2 and are kept; thumbnails fill in one by one; the outline jumps to a section | `pdf.open`, `pdf.page` |
-| Find | Search in document, then Return: "12 matches on 7 pages", the results grouped by page with the match in bold, every match highlighted on its page, the current one stronger, previous and next | `pdf.find` |
+| Find | Search in document, the one way to search, then Return: "12 matches on 7 pages" in the left panel, the results grouped by page with the match in bold, every match highlighted on its page, the current one stronger, previous and next. Done, the results' cross or the field's cross ends the search, and the left panel shows what it did before (Pages if it showed nothing known); a change to the document ends it the same way | `pdf.find` |
 | Comment | Highlight, Underline or Strike out the line you tap (tap twice for its paragraph), Note and Text box where you tap, in one of four colours; threads with replies, a status, delete. Comments carry the name kept under "Comment as" | `pdf.lines`, `pdf.comments`, `pdf.comment` |
 | Fill & Sign | The form's fields outlined (required empty ones in red) and listed with their values; choose one to type its value; Add text, Add date and Add initials place a mark where you tap; initials are kept | `pdf.fields`, `pdf.fill`, `pdf.fill_sign` |
 | Pages | Every page as a large thumbnail: choose pages, Rotate left or right, Delete, Extract (a new PDF in the library), Insert from file (another PDF here), drag a page to move it | `pdf.pages` |
@@ -120,8 +120,9 @@ Notes for whoever changes the script:
   of pages that starts at that page. Pages before it come back with the
   pill's previous.
 - **No keyboard events for script apps.** Every shortcut in the brief (⌘F,
-  ⌘+ and ⌘−, ⌘0, the arrows, ⌘Z, ⇧⌘Z, ⌘S) is a button instead; Search in
-  document runs on Return, which a text field does report.
+  ⌘+ and ⌘−, ⌘0, the arrows, ⌘Z, ⇧⌘Z, ⌘S) is a button instead; ⌘F's is the
+  Search in document field itself, which runs on Return, the one key a text
+  field does report.
 - **State lives on `mod.pdftools`.** A light/dark switch runs the script
   again (#440); every `let` starts over, `mod` survives, and `resume()` draws
   every region with the new look.

@@ -106,6 +106,10 @@ let MARK_HEX = {yellow: "#ffd84d" green: "#5cb85c" blue: "#2d7ff9" pink: "#f0609
 // and its alignments, as it names them (SERVICE.md "Edit").
 let TEXT_COLOURS = [{name: "Black" hex: "#000000"}, {name: "Dark grey" hex: "#4b4f54"}, {name: "Blue" hex: "#1a5fb4"}, {name: "Red" hex: "#c01c28"}, {name: "Green" hex: "#26a269"}, {name: "Orange" hex: "#e66100"}]
 let ALIGNS = ["left", "center", "right", "justify"]
+// The rail (02-reading): Pages, Outline and Comments. Search lives in the top
+// bar alone ("Search in document"): its results take the left panel while a
+// search runs, and give it back when the search ends.
+let RAIL = [{id: "pages" icon: "page" label: "Pages"}, {id: "outline" icon: "outline" label: "Outline"}, {id: "comments" icon: "comment" label: "Comments"}]
 let MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 let MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
@@ -352,6 +356,18 @@ fn combine_fits(list_h, height, error){
 }
 // Whether the edit `e` changes anything: its text, alignment or colour.
 fn edit_changes(e){ e.draft != e.text || e.align != e.align0 || e.color != nil }
+// The left side a search gives back when it ends: what it showed before the
+// results took it (a panel, or "" when it was folded away), else Pages.
+fn panel_after_find(from){
+    if from == "" || from == "pages" || from == "outline" || from == "comments" { return from }
+    "pages"
+}
+// Whether rail item `id` is lit: Pages in the Pages mode; otherwise the open
+// left panel's own item, so none while the panel shows search results.
+fn rail_lit(id, mode, panel, open){
+    if mode == "pages" { return id == "pages" }
+    open && panel == id
+}
 // A text colour's name in the Edit panel: "Its own colour" until one is chosen.
 fn colour_name(hex){
     if hex == nil { return "Its own colour" }
@@ -972,7 +988,7 @@ fn new_tab(d){
         mode: "read" panel: "pages" panel_kept: "pages" zoom: 1.0 fit: "" zoom_auto: true
         anchor: 1 page: 1
         renders: {} failed: {} thumbs: {} thumb_failed: {} grid: {} grid_failed: {} tile: 1.0
-        find: nil finding: false
+        find: nil finding: false find_from: nil
         comments: nil comments_state: "" thread: nil tool: "highlight" color: "yellow" reply: "" status_menu: false head_menu: false pending: nil
         fields: nil fields_state: "" field: nil field_text: "" field_on: false show_fields: true place: nil place_text: ""
         selected: [] drag: nil inserting: false
@@ -1301,7 +1317,8 @@ fn invalidate(t){
     t.grid = {}
     t.grid_failed = {}
     t.lines = {}
-    t.find = nil
+    // Its matches are stale: the search ends, and the left side goes back.
+    drop_find(t)
     start_timeout(0.05, || pump())
 }
 // Only page `p` changed (a comment, a filled field, an edited paragraph).
@@ -1389,6 +1406,9 @@ fn find_text(text){
     }
     t.finding = true
     t.find = {query: q total: 0 matches: [] cur: 0 error: "" by_page: {} pages: []}
+    // What the left side showed before the results took it: a new query
+    // while they show keeps it.
+    if t.panel != "search" { t.find_from = t.panel }
     t.panel = "search"
     let refit = auto_fit(t)
     show()
@@ -1419,10 +1439,20 @@ fn find_text(text){
         if t.find.matches.len() > 0 { go_match(t, 0) }
     })
 }
-fn end_find(t){
+// The search ends: its highlights go, and the left side shows what it did
+// before (panel_after_find), now or when Comment or Edit gives it back.
+// Draws nothing.
+fn drop_find(t){
     t.find = nil
     t.finding = false
-    if t.panel == "search" { t.panel = "pages" }
+    let back = panel_after_find(optional(t, "find_from", nil))
+    if t.panel == "search" { t.panel = back }
+    if t.panel_kept == "search" { t.panel_kept = back }
+    t.find_from = nil
+}
+// Done, the results' cross, the field's cross or an empty query.
+fn end_find(t){
+    drop_find(t)
     let refit = auto_fit(t)
     show()
     if refit { go_page(t, t.page) }
@@ -2448,20 +2478,16 @@ fn search_field(t){
     }
 }
 
-// The rail: Pages, Outline, Comments, Search.
+// The rail: Pages, Outline, Comments (RAIL). Search is the top bar's.
 fn rail_view(){
     let t = cur_tab()
     View{width: Fill height: Fill flow: Down align: Align{x: 0.5} padding: Inset{top: 13} spacing: 8
-        rail_item(t, "pages", "page", "Pages")
-        rail_item(t, "outline", "outline", "Outline")
-        rail_item(t, "comments", "comment", "Comments")
-        rail_item(t, "search", "search", "Search")
+        for r in RAIL { rail_item(t, r.id, r.icon, r.label) }
     }
 }
 fn rail_on(t, id){
     if t == nil { return false }
-    if t.mode == "pages" { return id == "pages" }
-    left_open(t) && t.panel == id
+    rail_lit(id, t.mode, t.panel, left_open(t))
 }
 fn rail_tap(id){
     let t = cur_tab()
@@ -2485,25 +2511,26 @@ fn rail_item(t, id, ic, label){
     }
 }
 
-// The left panel's head: its title and a cross that folds it away.
-fn head_row(title, line){
+// The left panel's head: its title and a cross that folds it away, or, over
+// search results (`ends_find`), ends the search as Done does.
+fn head_row(title, line, ends_find){
     View{width: Fill height: Fit flow: Down
         View{width: Fill height: 46 flow: Right align: Align{y: 0.5} padding: Inset{left: 15 right: 8}
             Label{padding: 0 width: Fill max_lines: 1 text_overflow: TextOverflow.Ellipsis text: title draw_text +: {color: pt_ink text_style: theme.font_bold{font_size: 13}}}
             IconBtn{width: 30 height: 30 icon_walk: Walk{width: 14 height: 14} draw_icon +: {svg: icon("close") color: pt_muted}
-                on_click: || { let t = cur_tab() if t != nil { set_panel(t, t.panel) } }}
+                on_click: || { let t = cur_tab() if t != nil { if ends_find { end_find(t) } else { set_panel(t, t.panel) } } }}
         }
         if line { Line{draw_bg.color: pt_line_soft} }
     }
 }
-fn panel_head_view(){ head_row("Pages", false) }
+fn panel_head_view(){ head_row("Pages", false, false) }
 fn list_head_view(){
     let t = cur_tab()
     if t == nil { return View{width: Fill height: 1} }
-    if t.panel == "outline" { return head_row("Outline", true) }
-    if t.panel == "comments" { return head_row("Comments", true) }
-    if t.find == nil { return head_row("Search", true) }
-    head_row(find_summary(t), true)
+    if t.panel == "outline" { return head_row("Outline", true, false) }
+    if t.panel == "comments" { return head_row("Comments", true, false) }
+    if t.find == nil { return head_row("Search", true, true) }
+    head_row(find_summary(t), true, true)
 }
 
 // Pages panel: thumbnails, filled in one at a time.

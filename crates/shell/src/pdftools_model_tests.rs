@@ -245,3 +245,36 @@ fn the_combine_card_scrolls_its_list_only_when_the_window_is_too_short() {
     assert_eq!(fits(290, 801, false), json!(false));
     assert_eq!(fits(290, 802, true), json!(false));
 }
+
+#[test]
+fn search_is_the_top_bars_and_the_rail_offers_pages_outline_and_comments() {
+    // The user: "side search and top search are duplicated". Search in
+    // document is the one way to search; the rail has no Search of its own.
+    let rail = pdftools_model("RAIL.to_json()");
+    let ids: Vec<&str> = rail.as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["pages", "outline", "comments"]);
+    let labels: Vec<&str> = rail.as_array().unwrap().iter().map(|r| r["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, ["Pages", "Outline", "Comments"]);
+    // While the left panel shows search results, no rail item is lit.
+    let lit = |id: &str, mode: &str, panel: &str, open: bool| pdftools_model(&format!("rail_lit(\"{id}\", \"{mode}\", \"{panel}\", {open}).to_json()"));
+    for id in ids {
+        assert_eq!(lit(id, "read", "search", true), json!(false), "{id} while results show");
+        assert_eq!(lit(id, "read", id, true), json!(true), "{id} while its own panel shows");
+        assert_eq!(lit(id, "read", id, false), json!(false), "{id} while the left side is folded");
+    }
+    assert_eq!(lit("pages", "pages", "search", false), json!(true), "the Pages mode lights Pages");
+    assert_eq!(lit("comments", "pages", "comments", true), json!(false));
+}
+
+#[test]
+fn a_search_gives_the_left_side_back_when_it_ends() {
+    let back = |from: &str| pdftools_model(&format!("panel_after_find({from}).to_json()"));
+    // What the left side showed before the results took it.
+    assert_eq!(back("\"outline\""), json!("outline"));
+    assert_eq!(back("\"comments\""), json!("comments"));
+    assert_eq!(back("\"pages\""), json!("pages"));
+    assert_eq!(back("\"\""), json!(""), "folded away before, folded away after");
+    // Unknown: Pages.
+    assert_eq!(back("nil"), json!("pages"));
+    assert_eq!(back("\"search\""), json!("pages"));
+}

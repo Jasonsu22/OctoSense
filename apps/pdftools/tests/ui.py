@@ -717,6 +717,28 @@ def combine_button_in_view(app):
     return own[-1]["r"]
 
 
+def labels(app, text):
+    """How many visible Labels read exactly `text`."""
+    return len([w for w in app.widgets() if w["ty"] == "Label" and w.get("t") == text])
+
+
+def rail_labels(app):
+    """The rail's items, top to bottom: the Labels in its column, between the
+    mode bar (below the 53-point tab row and the 54-point bar) and the
+    44-point status line."""
+    ax, ay, aw, ah = app.area()
+    return [w["t"] for w in sorted(app.widgets(), key=lambda w: w["r"][1])
+            if w["ty"] == "Label" and w.get("t") and w["r"][0] < ax + 84
+            and ay + 53 + 54 <= w["r"][1] and w["r"][1] + w["r"][3] <= ay + ah - 44]
+
+
+def close_results(app, title):
+    """The search results' own cross: the icon button right of their title."""
+    row, (x, y, w, h) = icon_buttons_near(app, title, "Label")
+    bx, by, bw, bh = [r for r in row if r[0] >= x + w - 1][0]
+    app.click(bx + bw / 2, by + bh / 2)
+
+
 def covers_kept(jail):
     """The covers in the pdf service's cache: file name -> modification time."""
     folder = jail / ".cache/covers"
@@ -756,13 +778,33 @@ def shell_journey(app, out, dark):
     app.images(2)
     app.grab(out, f"{p}02b-page-2")
 
+    # One search, in the top bar: the rail offers Pages, Outline and Comments.
+    assert rail_labels(app) == ["Pages", "Outline", "Comments"], f"the rail: {rail_labels(app)}"
+    # The left side the search gives back when it ends: the Comments panel
+    # (light), or the left side folded away (dark).
+    if dark:
+        app.tap("Pages", "Label")  # the rail's Pages, open: folds it
+        wait_until(lambda: labels(app, "Pages") == 1, "the Pages panel did not fold")
+    else:
+        app.tap("Comments", "Label")
+        wait_until(lambda: labels(app, "Comments") == 2, "the Comments panel did not open")
     app.tap("Search in document", "TextInput")
     app.type("revenue")
     app.key("Return")
     app.find("9 matches on 4 pages", "Label", timeout=60)
     app.images(1)
     app.grab(out, f"{p}03-find")
-    app.tap("Done")
+    if dark:
+        close_results(app, "9 matches on 4 pages")  # the results' own cross ends the search too
+        app.gone("9 matches on 4 pages")
+        wait_until(lambda: labels(app, "Pages") == 1 and labels(app, "Comments") == 1, "the left side did not fold again")
+    else:
+        app.tap("Done")
+        app.gone("9 matches on 4 pages")
+        wait_until(lambda: labels(app, "Comments") == 2, "Done did not give the Comments panel back")
+        app.grab(out, f"{p}03b-find-done")
+    app.tap("Pages", "Label")  # the Pages panel again, as the rest of the journey had it
+    wait_until(lambda: labels(app, "Pages") == 2, "the Pages panel did not open")
 
     app.tap("Comment", "Button")
     name_once(app)
