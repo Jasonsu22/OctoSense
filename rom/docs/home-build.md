@@ -88,6 +88,27 @@ For a standalone release, replace `--development` with `--sign-key` and
 `--sign-cert` pointing to the existing application signer outside the checkout.
 Do not use the ROM platform key for ordinary distribution.
 
+Launch-time test hooks (the `test_actions` and demo settings in the
+`makepad.APP_CONFIG` intent extra, AppCard's provisioning and seeding extras,
+the kernel's `makepad.OCTOS_PROXY`) work only in a development build: any app
+on the phone can start Home with extras, so a release Home ignores them
+(`crates/shell/src/launch_input.rs`). `--dev-mode` builds such a development
+test package: Home alone (no Bridge), with `--features dev-mode`, debuggable,
+signed with the development key, under its own package name and launcher label
+(`--app-label`, default `OctoSenseDev`), to `out/home/dev/<package>/`. It
+refuses the ROM variant, release signing keys, Home's own package name and the
+companion packages (`.bridge`, `.quickstep`, `.agent`). Only its plan was
+checked (`--dry-run`); the build and a device run are **unverified**:
+
+```sh
+rom/scripts/build-home.sh --variant standalone --development --dev-mode \
+  --package-name dev.makepad.octosense.devtest \
+  --sdk /path/to/makepad-android \
+  --android-sdk /path/to/android-sdk \
+  --gradle-home /path/to/gradle-8.11.1 \
+  --java-home /path/to/full-jdk
+```
+
 ROM Home and Bridge, signed with the existing ROM platform identity:
 
 ```sh
@@ -237,5 +258,11 @@ pill; those gestures remain available to the host OS. Home paging and the
 central pull for the app library still work inside the content area.
 Artifacts and source/hash receipts go to `out/home/ohos/`. The optional
 `--remote-port` enables app-owned loopback inspection for validation and writes
-to `out/home/ohos-validation/`; omit it for the normal package. Existing warnings
+to `out/home/ohos-validation/`; omit it for the normal package.
+The staged entry ability passes no launch parameters on: any app can start the
+exported ability with parameters, and Makepad would turn each `makepad.*` one
+into environment variables. `--dev-mode` builds a development HAP instead
+(`--features dev-mode`, launch parameters passed on for test hooks) and writes
+to a directory ending in `-dev`; it needs a `--bundle-id` other than
+`dev.makepad.octosense` (**unverified**: no HAP was built). Existing warnings
 remain. Android device acceptance still requires an ordinary Android phone.

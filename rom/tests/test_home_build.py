@@ -110,7 +110,7 @@ class DevelopmentPackageTests(unittest.TestCase):
         for extra in (package, ("--app-label", "OctoSenseLab")):
             with self.subTest(extra=extra), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 self.args("--variant", "standalone", "--development", *extra)
-        for label in ("Octo Sense", "1Home", "Home-Test", "x" * 65):
+        for label in ("Octo Sense", "1Home", "Home-Test", "x" * 65, "OctoSense"):
             with self.subTest(label=label), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 self.dev("--app-label", label)
 

@@ -117,8 +117,8 @@ def arguments(argv=None):
         if not args.package_name or not DEV_PACKAGE.fullmatch(args.package_name) or args.package_name in COMPANION_PACKAGES:
             p.error("--dev-mode needs --package-name dev.makepad.octosense.<suffix>: never Home's own package or a companion's")
         args.app_label = args.app_label or DEV_LABEL
-        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", args.app_label):
-            p.error("--app-label must be 1-64 letters and digits, starting with a letter")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", args.app_label) or args.app_label == "OctoSense":
+            p.error("--app-label must be 1-64 letters and digits, starting with a letter, and not Home's own label")
     elif args.package_name or args.app_label:
         p.error("--package-name and --app-label are only for --dev-mode test packages")
     if args.version_code != "auto" and (not args.version_code.isdigit() or not 0 < int(args.version_code) < 2100000000):
