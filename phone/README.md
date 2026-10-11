@@ -112,6 +112,33 @@ this setting and silently omit Android Back handling and other platform
 integration in a custom package. After installing a test build, open News or
 Photos and verify that an edge Back swipe returns to OctoSense Home.
 
+**Launch-time test hooks.** Any app on the phone can start Home with intent
+extras, so a release Home ignores the `makepad.*` test and provisioning
+extras: the `test_actions` and demo settings in `makepad.APP_CONFIG`,
+AppCard's `makepad.PROVISION_CONFIG` and seeding hooks, and the kernel's
+`makepad.OCTOS_PROXY`. Only a development build (a debug build, or
+`--features dev-mode`) reads them ([`launch_input.rs`](../crates/shell/src/launch_input.rs)).
+`--dev-mode` (above) builds one. Give it a test `--package-name` and install
+only its Home APK (**unverified** on a device):
+
+```sh
+rom/scripts/build-home.sh --variant standalone --development --dev-mode \
+  --package-name dev.makepad.octosense.devtest \
+  --sdk /path/to/makepad-android \
+  --android-sdk /path/to/android-sdk \
+  --gradle-home /path/to/gradle-8.11.1 \
+  --java-home /path/to/full-jdk \
+  --packager .sources/makepad/target/release/cargo-makepad
+adb install rom/out/home/standalone-dev-mode/dev.makepad.octosense.devtest/OctoSenseHome.apk
+adb shell am start -n dev.makepad.octosense.devtest/.MakepadApp \
+  --es makepad.APP_CONFIG '{"test_actions":["launch-mail"]}'
+```
+
+On OpenHarmony, `rom/scripts/build-home-ohos.py --dev-mode` does the same
+with a separate `--bundle-id`; a release Home's entry ability passes no
+launch parameters on. Desktop `--test-action` flags are command-line
+arguments, which only the local user can pass, and work in every build.
+
 **OpenHarmony:** `python3 rom/scripts/build-home-ohos.py --deveco-home ...
 --packager ... --signing-config ...` builds a normal OpenHarmony app with an
 existing DevEco signing profile
@@ -285,9 +312,13 @@ never holds a socket or a password. For a demo mailbox (password `demo`):
 ```sh
 # desktop, from phone/
 MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense-home --features mobile-only
-# phone
-adb shell am start -n <package>/.MakepadApp --es makepad.APP_CONFIG '{"mail_demo":true}'
+# phone: a development test package (see Launch-time test hooks)
+adb shell am start -n <test package>/.MakepadApp --es makepad.APP_CONFIG '{"mail_demo":true}'
 ```
+
+The desktop command reads `MAKEPAD_APP_CONFIG` as a local setting; a phone
+release build ignores it, so the phone line needs a development test package
+(**unverified** since that change).
 
 The earlier native News, Photos and Maps modules are deleted (native-apps ADR 0004 §1, [#113](https://github.com/OctoSense-org/OctoSense/pull/113));
 none of the system apps has a native module any more.

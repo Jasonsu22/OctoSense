@@ -61,6 +61,23 @@ Home 默认使用 `dev.makepad.octosense`。要在已安装的应用旁构建测
 平台集成功能。安装测试版后，打开 News 或 Photos，检查从屏幕边缘向内滑动返回
 是否回到 OctoSense Home。
 
+**启动时的测试钩子。** 手机上的任何应用都能带着 intent extra 启动 Home，因此发布版 Home 会忽略 `makepad.*` 测试和配置 extra：`makepad.APP_CONFIG` 中的 `test_actions` 和演示设置、AppCard 的 `makepad.PROVISION_CONFIG` 和预置卡片钩子，以及内核的 `makepad.OCTOS_PROXY`。只有开发版（调试构建，或使用 `--features dev-mode`）才读取它们（[`launch_input.rs`](../crates/shell/src/launch_input.rs)）。`--dev-mode`（见上文）构建开发版：请为它指定测试用的 `--package-name`，并且只安装其中的 Home APK（**未在设备上验证**）：
+
+```sh
+rom/scripts/build-home.sh --variant standalone --development --dev-mode \
+  --package-name dev.makepad.octosense.devtest \
+  --sdk /path/to/makepad-android \
+  --android-sdk /path/to/android-sdk \
+  --gradle-home /path/to/gradle-8.11.1 \
+  --java-home /path/to/full-jdk \
+  --packager .sources/makepad/target/release/cargo-makepad
+adb install rom/out/home/standalone-dev-mode/dev.makepad.octosense.devtest/OctoSenseHome.apk
+adb shell am start -n dev.makepad.octosense.devtest/.MakepadApp \
+  --es makepad.APP_CONFIG '{"test_actions":["launch-mail"]}'
+```
+
+在 OpenHarmony 上，`rom/scripts/build-home-ohos.py --dev-mode` 以另一个 `--bundle-id` 做同样的事；发布版 Home 的入口 ability 不转发任何启动参数。桌面上的 `--test-action` 是命令行参数，只有本机用户能传入，所有构建都支持。
+
 **OpenHarmony：** `python3 rom/scripts/build-home-ohos.py --deveco-home ... --packager ... --signing-config ...` 使用现有的 DevEco 签名配置构建普通的 OpenHarmony 应用（[rom/docs/home-build.md（英文）](../rom/docs/home-build.md#openharmony-home)）。**iOS 模拟器：** 在 `phone/` 中运行 `../.sources/makepad/target/release/cargo-makepad makepad apple ios --org=dev.makepad --app=octosense run-sim -p octosense-home --features mobile-only`。两者都不在 CI 中构建。
 
 ## 应用图标
@@ -192,9 +209,11 @@ Mail 通过 `mail` 宿主服务（[`apps/mail/host-service`](../apps/mail/host-s
 ```sh
 # desktop, from phone/
 MAKEPAD_APP_CONFIG='{"mail_demo":true}' cargo run --release -p octosense-home --features mobile-only
-# phone
-adb shell am start -n <package>/.MakepadApp --es makepad.APP_CONFIG '{"mail_demo":true}'
+# 手机：开发版测试包（见“启动时的测试钩子”）
+adb shell am start -n <test package>/.MakepadApp --es makepad.APP_CONFIG '{"mail_demo":true}'
 ```
+
+桌面命令会把 `MAKEPAD_APP_CONFIG` 当作本机设置读取；手机发布版会忽略它，所以手机那行需要开发版测试包（这一改动后**未验证**）。
 
 早期的原生 News、Photos 和 Maps 模块已删除（原生应用 ADR 0004 §1，[#113](https://github.com/OctoSense-org/OctoSense/pull/113)）；所有系统应用都不再有原生模块。
 

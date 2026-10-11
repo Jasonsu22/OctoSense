@@ -212,6 +212,7 @@ pub(crate) mod test_system_apps {
 /// `glance` takes the cards apps publish to the glance screen (glance.rs).
 /// `mail_demo` in MAKEPAD_APP_CONFIG serves a demo mailbox from a file vault
 /// instead (no keychain, no network): `MAKEPAD_APP_CONFIG='{"mail_demo":true}'`.
+/// A desktop reads it; a phone only in a development build (`launch_input`).
 /// `news` fetches News's feeds on a timer, with no model (ADR 0002), into
 /// the Card runner's host directory, so it keeps fetching while News is
 /// closed. Last, every system app no service answers gets the notice
@@ -229,12 +230,7 @@ pub fn register_mail_services() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         crate::glance::register();
-        let demo = std::env::var("MAKEPAD_APP_CONFIG")
-            .ok()
-            .and_then(|text| makepad_strict_json::parse(text.as_bytes()).ok())
-            .and_then(|config| config.get("mail_demo").and_then(|v| v.as_bool()))
-            .unwrap_or(false);
-        if demo {
+        if crate::launch_input::flag("mail_demo") {
             octosense_mail_service::register_demo()
         } else {
             octosense_mail_service::register()
@@ -684,7 +680,8 @@ pub fn matches_running_app(app: &crate::clients::AppDef, running_id: &str, title
 /// the launcher row names — a system app by its `os.*` manifest id, an
 /// installed one by its own. Any other module opens with what
 /// MAKEPAD_APP_CONFIG gives it (`{"module_open": {"<id>": {...}}}`, or
-/// `mail_endpoint` for a linked `mail` module), else empty.
+/// `mail_endpoint` for a linked `mail` module; a desktop reads it, a phone
+/// only in a development build, `launch_input`), else empty.
 pub fn module_open(module: &'static dyn AppModule, app: &crate::clients::AppDef) -> Result<makepad_app_module::ValidatedOpen, String> {
     let schema = module.open_schema();
     if module.id() == "card" {
@@ -695,7 +692,7 @@ pub fn module_open(module: &'static dyn AppModule, app: &crate::clients::AppDef)
         let instance = app.args.iter().find_map(|a| a.strip_prefix("--studio-instance=")).ok_or("Studio launch requires an admitted instance")?;
         return schema.validate(&format!("{{\"instance_id\":{}}}", makepad_strict_json::Value::Str(instance.into()).to_json()), &[]);
     }
-    let config = std::env::var("MAKEPAD_APP_CONFIG").ok().and_then(|text| makepad_strict_json::parse(text.as_bytes()).ok());
+    let config = crate::launch_input::app_config();
     if let Some(json) = config.as_ref().and_then(|c| c.get("module_open")).and_then(|v| v.get(module.id())).map(|v| v.to_json()) {
         return schema.validate(&json, &[]);
     }

@@ -195,8 +195,11 @@ app-aichat = ["dep:makepad-aichat"]
 # A development build for developer mode (ADR 0004 §13, src/dev_mode.rs):
 # Settings and OCTOSENSE_DEV_MODE may turn it on. Debug builds are
 # development builds without it (build.rs); a release build without it
-# honours only the `--dev-grant-all` launch flag.
-dev-mode = []
+# honours only the `--dev-grant-all` launch flag. Only a development build
+# reads launch input: the app config's test actions and demo settings
+# (src/launch_input.rs), the kernel's launch proxy and AppCard's
+# provisioning and seeding hooks.
+dev-mode = ["octosense-ai-host/dev-mode", "octosense-appcard?/dev-mode"]
 # The `wasm` host service (ADR 0011), which runs an app's own
 # WebAssembly functions (crates/wasm-host). On in every standard shell
 # build (tools/native_apps.py's BASE_DEFAULT); it runs where build.rs sets
