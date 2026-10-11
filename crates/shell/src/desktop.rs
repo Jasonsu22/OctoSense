@@ -589,6 +589,68 @@ mod tests {
         // `apps.<app>`), never to the entry.
         assert_ne!(format!("apps.{}", "shell.assistant"), ASSISTANT_ENTRY);
     }
+
+    fn settled(style: DesktopStyle) -> StyleTween {
+        let mut t = StyleTween::default();
+        t.select(style);
+        t.step(1.0);
+        t
+    }
+
+    #[test]
+    fn a_floating_dock_hides_only_while_the_shell_is_full_screen() {
+        for style in [DesktopStyle::Macos, DesktopStyle::OctoSense] {
+            assert!(dock_auto_hides_for(style, true), "{style:?}");
+            assert!(!dock_auto_hides_for(style, false), "{style:?} in a window");
+        }
+        // A shelf that reserves its strip, sits elsewhere or is absent.
+        for style in [
+            DesktopStyle::Windows,
+            DesktopStyle::Windows2000,
+            DesktopStyle::NextStep,
+            DesktopStyle::Omarchy,
+            DesktopStyle::Ios,
+            DesktopStyle::Android,
+        ] {
+            assert!(!dock_auto_hides_for(style, true), "{style:?}");
+        }
+    }
+
+    #[test]
+    fn a_hidden_dock_slides_just_past_the_bottom_edge() {
+        let screen = rect(0.0, 0.0, 1440.0, 900.0);
+        let dock = shelf_geometry(screen, &settled(DesktopStyle::OctoSense), 8);
+        let bottom = 900.0;
+        assert_eq!(dock_slide(dock, bottom, 1.0), 0.0, "up: in place");
+        // Down: its top is past the edge, so nothing of it is on screen.
+        let down = dock_slide(dock, bottom, 0.0);
+        assert_eq!(dock.pos.y + down, bottom + DOCK_EDGE);
+        // Between: partway, eased, moving down as the reveal falls.
+        let half = dock_slide(dock, bottom, 0.5);
+        assert!(half > 0.0 && half < down);
+        assert!(dock_slide(dock, bottom, 0.1) > dock_slide(dock, bottom, 0.9));
+        assert_eq!(dock_slide(dock, bottom, -1.0), down);
+        assert_eq!(dock_slide(dock, bottom, 2.0), 0.0);
+    }
+
+    #[test]
+    fn the_bottom_edge_calls_a_hidden_dock_and_leaving_it_sends_it_down() {
+        let screen = rect(0.0, 0.0, 1440.0, 900.0);
+        let dock = shelf_geometry(screen, &settled(DesktopStyle::OctoSense), 8);
+        let mid = dock.pos.x + dock.size.x * 0.5;
+        // Down: only the bottom edge calls it, anywhere along it.
+        assert!(dock_pointer_wants(dvec2(mid, 899.0), screen, dock, false));
+        assert!(dock_pointer_wants(dvec2(5.0, 899.5), screen, dock, false));
+        assert!(!dock_pointer_wants(dvec2(mid, dock.pos.y + 10.0), screen, dock, false), "where it would be");
+        assert!(!dock_pointer_wants(dvec2(mid, 890.0), screen, dock, false));
+        // Up: over it, or the room its tooltips take above it, keeps it up.
+        assert!(dock_pointer_wants(dvec2(mid, dock.pos.y + 10.0), screen, dock, true));
+        assert!(dock_pointer_wants(dvec2(mid, dock.pos.y - DOCK_HOVER_ROOM + 1.0), screen, dock, true));
+        // Anywhere else sends it down; the edge still keeps it.
+        assert!(!dock_pointer_wants(dvec2(mid, dock.pos.y - DOCK_HOVER_ROOM - 1.0), screen, dock, true));
+        assert!(!dock_pointer_wants(dvec2(dock.pos.x - 40.0, dock.pos.y + 10.0), screen, dock, true));
+        assert!(dock_pointer_wants(dvec2(5.0, 899.0), screen, dock, true));
+    }
 }
 
 use crate::desk::WmState;
@@ -796,6 +858,31 @@ pub struct DesktopShelf {
     hover_frame: NextFrame,
     #[rust]
     hover_time: f64,
+    /// The dock hides ([`dock_auto_hides`]), as last drawn.
+    #[rust]
+    auto_hide: bool,
+    /// Where the dock is going: up in place, or down below the bottom edge.
+    #[rust]
+    reveal_up: bool,
+    /// Where `reveal_timer` sends the dock when it fires; None when nothing
+    /// is waiting.
+    #[rust]
+    reveal_pending: Option<bool>,
+    #[rust]
+    reveal_timer: Timer,
+    #[rust]
+    reveal_frame: NextFrame,
+    #[rust]
+    reveal_time: f64,
+    /// Something the dock opened (the launcher) holds it up.
+    #[rust]
+    held: bool,
+    /// The screen and the dock's place on it, as last drawn: what the
+    /// pointer is measured against while the dock is down.
+    #[rust]
+    screen: Rect,
+    #[rust]
+    dock_rect: Rect,
 }
 thread_local! {
     static SHELF_BOUNDS: std::cell::Cell<Rect> = std::cell::Cell::new(Rect::default());
@@ -825,6 +912,34 @@ impl DesktopShelf {
             self.hover_frame = cx.new_next_frame();
             self.redraw(cx);
         }
+    }
+    /// A hiding dock's part of every pointer event: the pointer at `p`
+    /// (None: it left the window), and whether something the dock opened
+    /// still `held` it up. Resting on the bottom edge brings the dock up
+    /// after [`DOCK_SHOW_DELAY`]; leaving it sends it down after
+    /// [`DOCK_HIDE_DELAY`].
+    pub fn auto_hide_pointer(&mut self, cx: &mut Cx, p: Option<Vec2d>, held: bool) {
+        self.held = held;
+        if !self.auto_hide {
+            return;
+        }
+        let wants = held
+            || p.is_some_and(|p| dock_pointer_wants(p, self.screen, self.dock_rect, self.reveal_up));
+        if wants == self.reveal_up {
+            if self.reveal_pending.take().is_some() {
+                cx.stop_timer(self.reveal_timer);
+            }
+        } else if self.reveal_pending != Some(wants) {
+            cx.stop_timer(self.reveal_timer);
+            self.reveal_pending = Some(wants);
+            self.reveal_timer = cx.start_timeout(if wants { DOCK_SHOW_DELAY } else { DOCK_HIDE_DELAY });
+        }
+    }
+    /// Start the dock sliding up or down ([`DOCK_SLIDE`]).
+    fn slide(&mut self, cx: &mut Cx, up: bool) {
+        self.reveal_up = up;
+        self.reveal_time = 0.0;
+        self.reveal_frame = cx.new_next_frame();
     }
     fn button(
         &mut self,
@@ -1085,7 +1200,58 @@ fn dock_app_ids(state: &WmState) -> Vec<String> {
     apps
 }
 pub fn dock_bounds(state: &WmState, size: Vec2d) -> Rect {
-    shelf_geometry(rect(0.0,0.0,size.x,size.y), &state.style, dock_app_ids(state).len())
+    let mut dock = shelf_geometry(rect(0.0,0.0,size.x,size.y), &state.style, dock_app_ids(state).len());
+    dock.pos.y += dock_slide(dock, size.y, state.dock_reveal);
+    dock
+}
+
+/// The pointer this close to the bottom edge calls a hidden dock up.
+pub const DOCK_EDGE: f64 = 2.0;
+/// How long the pointer rests on the edge before the dock comes up, so a
+/// pass along the bottom of a full-screen window does not raise it.
+pub const DOCK_SHOW_DELAY: f64 = 0.15;
+/// How long after the pointer leaves the dock it goes back down.
+pub const DOCK_HIDE_DELAY: f64 = 0.45;
+/// How long the dock takes to slide up or down.
+pub const DOCK_SLIDE: f64 = 0.22;
+/// Above a dock that is up, the room its tooltips and grown icons take: the
+/// pointer may cross it without the dock going down.
+pub const DOCK_HOVER_ROOM: f64 = 44.0;
+
+/// Whether `style`'s dock hides while the shell's own window is full
+/// screen: the floating docks, macOS's and OctoSense's, as macOS's Dock does
+/// beside a full-screen app. In a window, a dock always shows; a shelf that
+/// reserves its strip (Windows') or sits elsewhere never hides.
+pub fn dock_auto_hides_for(style: DesktopStyle, host_fullscreen: bool) -> bool {
+    host_fullscreen && matches!(style, DesktopStyle::Macos | DesktopStyle::OctoSense)
+}
+pub fn dock_auto_hides(state: &WmState) -> bool {
+    dock_auto_hides_for(state.style.target, state.host_fullscreen)
+}
+/// Whether any of the dock is on screen this frame: one that does not hide,
+/// or one not all the way down.
+pub fn dock_showing(state: &WmState) -> bool {
+    !dock_auto_hides(state) || state.dock_reveal > 0.001
+}
+/// How far below its place a dock `reveal` of the way up is drawn: just past
+/// the bottom edge at 0, in place at 1, eased between.
+pub fn dock_slide(dock: Rect, screen_bottom: f64, reveal: f64) -> f64 {
+    let t = reveal.clamp(0.0, 1.0);
+    let eased = t * t * (3.0 - 2.0 * t);
+    (1.0 - eased) * (screen_bottom - dock.pos.y + DOCK_EDGE).max(0.0)
+}
+/// Whether the pointer at `p` wants a hiding dock up: on the screen's bottom
+/// edge, or, while the dock is up (`up`), over it or the room above it its
+/// tooltips take. `dock` is its place when up.
+pub fn dock_pointer_wants(p: Vec2d, screen: Rect, dock: Rect, up: bool) -> bool {
+    let bottom = screen.pos.y + screen.size.y;
+    let on_edge = p.y >= bottom - DOCK_EDGE && p.x >= screen.pos.x && p.x <= screen.pos.x + screen.size.x;
+    let over = up
+        && p.x >= dock.pos.x - 8.0
+        && p.x <= dock.pos.x + dock.size.x + 8.0
+        && p.y >= dock.pos.y - DOCK_HOVER_ROOM
+        && p.y <= bottom;
+    on_edge || over
 }
 
 /// How many points of the work area's bottom the dock covers, on a desk
@@ -1177,7 +1343,20 @@ impl Widget for DesktopShelf {
             // The pill paints from the sheet the state carries, like every kit.
             self.d.set_material(state.material);
             let opacity = (1.0 - t.share(|s| s.tiling)) as f32;
-            if opacity > 0.001 && !style.mobile() {
+            if !style.mobile() {
+                // What the pointer is measured against while the dock is down.
+                self.screen = screen;
+                self.dock_rect = shelf_geometry(screen, t, dock_app_ids(state).len());
+                let auto_hide = dock_auto_hides(state);
+                if auto_hide != self.auto_hide {
+                    // Full screen sends the dock down; a window brings it back.
+                    self.auto_hide = auto_hide;
+                    cx.stop_timer(self.reveal_timer);
+                    self.reveal_pending = None;
+                    self.slide(cx, !auto_hide);
+                }
+            }
+            if opacity > 0.001 && !style.mobile() && dock_showing(state) {
                 let mut apps: Vec<_> = dock_assistant()
                     .into_iter()
                     .chain(crate::shell::launcher::apps().into_iter().filter(|a| !a.disabled))
@@ -1208,10 +1387,15 @@ impl Widget for DesktopShelf {
                     }
                 }
                 let n = (apps.len() + 1).max(1) as f64;
-                let r = shelf_geometry(screen, t, apps.len());
+                let mut r = shelf_geometry(screen, t, apps.len());
+                r.pos.y += dock_slide(r, screen.pos.y + screen.size.y, state.dock_reveal);
                 let (x, y, w, h) = (r.pos.x, r.pos.y, r.size.x, r.size.y);
                 self.bounds = r;
-                SHELF_BOUNDS.with(|b| b.set(r));
+                // A dock that hides passes over the glance panel and the
+                // toasts like a window; they keep to the desk's bottom.
+                if !self.auto_hide {
+                    SHELF_BOUNDS.with(|b| b.set(r));
+                }
                 let glass_shelf = t.share(|s| s.glass_shelf);
                 // One pill's worth of glass between the two pills.
                 let (frosted, octosense) = shelf_glass_split(t, self.d.material().is_glass());
@@ -1379,7 +1563,34 @@ impl Widget for DesktopShelf {
         cx.end_turtle_with_area(&mut self.area);
         DrawStep::done()
     }
-    fn handle_event(&mut self, cx: &mut Cx, event: &Event, _scope: &mut Scope) {
+    fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        if self.reveal_timer.is_event(event).is_some() {
+            if let Some(up) = self.reveal_pending.take() {
+                self.slide(cx, up);
+            }
+        }
+        if let Event::MouseLeave(_) = event {
+            let held = self.held;
+            self.auto_hide_pointer(cx, None, held);
+        }
+        if let Some(ne) = self.reveal_frame.is_event(event) {
+            let dt = if self.reveal_time == 0.0 { 1.0 / 60.0 } else { (ne.time - self.reveal_time).min(0.05) };
+            self.reveal_time = ne.time;
+            if let Some(state) = scope.data.get_mut::<WmState>() {
+                let target = if self.reveal_up { 1.0 } else { 0.0 };
+                let step = dt / DOCK_SLIDE;
+                state.dock_reveal = if target > state.dock_reveal {
+                    (state.dock_reveal + step).min(target)
+                } else {
+                    (state.dock_reveal - step).max(target)
+                };
+                if state.dock_reveal != target {
+                    self.reveal_frame = cx.new_next_frame();
+                }
+            }
+            // The desk's backdrop follows the dock (`dock_bounds`).
+            cx.redraw_all();
+        }
         if let Some(ne) = self.hover_frame.is_event(event) {
             if let Some(hit) = &self.hover {
                 if !self.hover_mix.iter().any(|(h, _)| h == hit) {

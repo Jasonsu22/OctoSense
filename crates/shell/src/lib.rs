@@ -560,6 +560,9 @@ pub struct App {
     #[rust]
     pub test_page: Option<(Timer, i64)>,
     #[rust] pub test_glance_fixtures: Option<(Timer, String)>,
+    /// `--test-action host-fullscreen`: behave as if the window were full
+    /// screen on its host, which a hidden run cannot enter.
+    #[rust] test_host_fullscreen: bool,
     /// The hidden WebView that renders pages for the octos reader where
     /// there is no Chrome (the phone): serves `webview_render::renderer`.
     #[rust]
@@ -743,7 +746,9 @@ impl App {
     fn dock_overlay(&self, cx: &mut Cx, area: LRect) -> f64 {
         let rect = self.desk(cx).borrow_mut::<WmDesk>().map(|d| d.desk_rect).unwrap_or_default();
         let desk_bottom = if rect.size.x > 1.0 { rect.pos.y + rect.size.y } else { 860.0 };
-        self.state.as_ref().map_or(0.0, |s| desktop::dock_overlay(&s.style, desk_bottom, area.y + area.h))
+        // A dock that hides covers nothing a window keeps clear of.
+        self.state.as_ref().filter(|s| !desktop::dock_auto_hides(s))
+            .map_or(0.0, |s| desktop::dock_overlay(&s.style, desk_bottom, area.y + area.h))
     }
 
     fn desk_area(&self, cx: &mut Cx) -> LRect {
@@ -5428,6 +5433,20 @@ impl App {
                         i += 2;
                         continue;
                     }
+                    // host-fullscreen: the shell behaves as if its window were
+                    // full screen on its host (a hidden run cannot enter one),
+                    // so a floating dock hides until the pointer comes to the
+                    // bottom edge (`desktop::dock_auto_hides`).
+                    if name == "host-fullscreen" {
+                        log!("wm: --test-action host-fullscreen");
+                        self.test_host_fullscreen = true;
+                        if let Some(state) = self.state.as_mut() {
+                            state.host_fullscreen = true;
+                        }
+                        self.redraw_all(cx);
+                        i += 2;
+                        continue;
+                    }
                     if let Some(app) = name.strip_prefix("launch-") {
                         let app = app.to_string();
                         log!("wm: --test-action launch {}", app);
@@ -5892,6 +5911,8 @@ mod app_hub_lifecycle_tests {
             dragging: Vec::new(),
             drop_hint: None,
             pane_sliding: false,
+            host_fullscreen: false,
+            dock_reveal: 1.0,
         });
         // Real module isolates exercise shutdown and client removal without
         // requiring a downloaded Card or changing the machine's catalog.
@@ -6036,6 +6057,8 @@ impl MatchEvent for App {
             dragging: Vec::new(),
             drop_hint: None,
             pane_sliding: false,
+            host_fullscreen: false,
+            dock_reveal: 1.0,
             style: Default::default(),
             material,
             roles,
@@ -6590,6 +6613,13 @@ impl App {
             }
             // The bar is the caption: keep it around the OS buttons.
             self.update_bar_chrome(cx, &ev.new_geom);
+            // A full-screen shell hides its floating dock until the pointer
+            // comes to the bottom edge (`desktop::dock_auto_hides`).
+            let fullscreen = ev.new_geom.is_fullscreen || self.test_host_fullscreen;
+            if self.state.as_ref().is_some_and(|s| s.host_fullscreen != fullscreen) {
+                self.state_mut().host_fullscreen = fullscreen;
+                self.redraw_all(cx);
+            }
             // A warm instance is configured with the desktop's own dpi, so
             // what it warms up is what its tile will use.
             self.dpi_factor = ev.new_geom.dpi_factor;
