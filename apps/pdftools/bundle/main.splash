@@ -399,6 +399,80 @@ fn colour_name(hex){
     for c in TEXT_COLOURS { if c.hex == hex { return c.name } }
     hex
 }
+// A font's name for a person. The engine names a font as the PDF does: a
+// subset with its six-letter tag ("ABCDEF+Menlo-Regular"), an unnamed one
+// (a web browser's Type 3 fonts) as "", and its own Japanese fallback as
+// "Shippori Mincho Type3".
+fn font_label(font){
+    let f = "" + font
+    if f == "" { return "Unnamed font" }
+    f.replace(regex("^[A-Z][A-Z][A-Z][A-Z][A-Z][A-Z]\\+"), "").replace(regex(" Type3$"), "").replace(regex("-", "g"), " ")
+}
+// The Edit panel's Font box: the paragraph's font and its size.
+fn font_text(e){
+    let size = pick(e.size > 0, "" + round(e.size * 10) / 10 + " pt", "")
+    if size == "" { return font_label(e.font) }
+    font_label(e.font) + "  ·  " + size
+}
+// What an edit is checked for (pdf.edit_check): its text, alignment and
+// colour as they stand.
+fn edit_key(e){ e.draft + "\n" + e.align + "\n" + pick(e.color == nil, "", e.color) }
+// What an edit would change besides its words, from what pdf.edit_check
+// answered (`check`; nil before it answers, or from an engine without the
+// check): another font, text over its neighbours, text off the page.
+fn edit_risks(check){
+    let out = []
+    if check == nil { return out }
+    if !optional(check, "keeps_font", true) {
+        out.push("This paragraph's font can't show all of this text, so PDF Tools sets it in " + font_label(optional(check, "font", "")) + ".")
+    }
+    let covers = optional(check, "covers", 0)
+    if covers > 0 { out.push("It needs more room than the paragraph has and runs into " + plural(covers, "line", "lines") + " of text nearby.") }
+    if optional(check, "off_page", false) { out.push("Part of it falls off the page.") }
+    out
+}
+// Apply says "Apply anyway" while the check has something to say.
+fn apply_label(e){ pick(e.check_error == "" && edit_risks(e.check).len() > 0, "Apply anyway", "Apply") }
+// How many pieces the PDF keeps the line of paragraph `n` in: the
+// paragraphs (from pdf.lines) on its line (their boxes overlap by half their
+// height) that follow on from it end to end (a gap under half the text's
+// size), it included. A web browser prints a title whose glyphs span several
+// fonts as one piece per font, and the engine reads each piece as a
+// paragraph.
+fn line_pieces(paragraphs, n){
+    let own = nil
+    for p in paragraphs { if p.n == n { own = p } }
+    if own == nil { return 1 }
+    let row = []
+    for p in paragraphs {
+        let top = max(p.box[1], own.box[1])
+        let bottom = min(p.box[1] + p.box[3], own.box[1] + own.box[3])
+        if bottom - top > min(p.box[3], own.box[3]) * 0.5 { row.push(p) }
+    }
+    let lo = own.box[0]
+    let hi = own.box[0] + own.box[2]
+    let taken = [own.n]
+    let grew = true
+    loop {
+        if !grew { break }
+        grew = false
+        for p in row {
+            let gap = max(optional(p, "size", 0), optional(own, "size", 0)) * 0.5
+            if !has(taken, p.n) && p.box[0] <= hi + gap && p.box[0] + p.box[2] >= lo - gap {
+                taken.push(p.n)
+                lo = min(lo, p.box[0])
+                hi = max(hi, p.box[0] + p.box[2])
+                grew = true
+            }
+        }
+    }
+    taken.len()
+}
+// The note for a paragraph that is one piece of a line, or "".
+fn pieces_note(pieces){
+    if pieces < 2 { return "" }
+    "The PDF stores this line in " + pieces + " pieces, so an edit changes only the piece you clicked."
+}
 
 start_timeout(0.05, || boot())
 
@@ -2201,12 +2275,59 @@ fn edit_tap(t, p, x, y){
             for l in optional(lines, "lines", []) { if l.n == n { boxes.push(l.box) } }
         }
         let align = guess_align(boxes)
+        // `check`: what pdf.edit_check said for the edit as it was
+        // (`checked`, its edit_key), or why it can't be made (`check_error`).
         t.edit = {page: p n: hit.n box: hit.box text: hit.text draft: hit.text font: optional(hit, "font", "") size: optional(hit, "size", 0)
-            align: align align0: align color: nil colours: false}
+            align: align align0: align color: nil colours: false
+            pieces: line_pieces(optional(lines, "paragraphs", []), hit.n)
+            check: nil checked: "" check_error: "" check_n: 0 apply_after: ""}
         render_canvas()
         render_right()
+        check_edit(t)
     })
 }
+// Ask the engine what the edit would do as it stands (pdf.edit_check): the
+// right panel says it before Apply. A check that comes back for an older
+// draft is dropped. When Apply is waiting on it (`apply_after`), the edit is
+// made if there is nothing to say; otherwise the panel says it, and Apply
+// (now "Apply anyway") makes it.
+fn check_edit(t){
+    let e = t.edit
+    if e == nil { return }
+    let key = edit_key(e)
+    engine("edit_check", edit_args(t.doc, e), fn(a){
+        let now = t.edit
+        if now == nil || now.page != e.page || now.n != e.n || edit_key(now) != key { return }
+        now.checked = key
+        now.check = nil
+        now.check_error = ""
+        if a.is_ok { now.check = a.data } else { now.check_error = check_refusal(a.error) }
+        let go = now.apply_after == key && now.check_error == "" && edit_risks(now.check).len() == 0
+        now.apply_after = ""
+        render_right()
+        if go { make_edit(t) }
+    })
+}
+// A check's refusal in the engine's plain words (SERVICE.md: the code, then
+// words for a person); nothing for an engine without the check (an older
+// shell) or no engine, where Apply finds out.
+fn check_refusal(error){
+    if missing(error) || outdated(error) { return "" }
+    err_words(error)
+}
+// Check again once typing (or a change of alignment or colour) pauses.
+fn schedule_check(t){
+    let e = t.edit
+    if e == nil { return }
+    e.check_n = e.check_n + 1
+    let n = e.check_n
+    start_timeout(0.6, || {
+        let now = t.edit
+        if now != nil && now.page == e.page && now.n == e.n && now.check_n == n { check_edit(t) }
+    })
+}
+// Apply: an edit checked as it stands is made (the panel has said what it
+// would do); one not checked yet is checked first.
 fn apply_edit(t){
     let e = t.edit
     if e == nil { return }
@@ -2216,6 +2337,21 @@ fn apply_edit(t){
         render_right()
         return
     }
+    let key = edit_key(e)
+    if e.checked != key {
+        e.apply_after = key
+        check_edit(t)
+        return
+    }
+    if e.check_error != "" {
+        note("Couldn't change the text: " + e.check_error)
+        return
+    }
+    make_edit(t)
+}
+fn make_edit(t){
+    let e = t.edit
+    if e == nil { return }
     engine("edit_text", edit_args(t.doc, e), fn(a){
         wrote(a)
         if !a.is_ok {
@@ -2239,6 +2375,7 @@ fn set_align(t, a){
     if t == nil || t.edit == nil { return }
     t.edit.align = a
     render_right()
+    schedule_check(t)
 }
 // `hex` nil: the paragraph keeps its own colour.
 fn set_colour(t, hex){
@@ -2246,17 +2383,12 @@ fn set_colour(t, hex){
     t.edit.color = hex
     t.edit.colours = false
     render_right()
+    schedule_check(t)
 }
 fn toggle_colours(t){
     if t == nil || t.edit == nil { return }
     t.edit.colours = !t.edit.colours
     render_right()
-}
-fn font_text(e){
-    let size = pick(e.size > 0, "" + round(e.size * 10) / 10 + " pt", "")
-    if e.font == "" { return size }
-    if size == "" { return e.font }
-    e.font + "  ·  " + size
 }
 
 // ---- modes and panels ---------------------------------------------------------
@@ -2992,7 +3124,7 @@ fn edit_box(t, k){
     View{margin: Inset{left: b[0] * k - 8 top: b[1] * k - 8} width: b[2] * k + 16 height: edit_height(e, k) flow: Overlay
         RoundedView{width: Fill height: Fill show_bg: true draw_bg +: {color: #xffffff border_size: 1.5 border_color: #x2171ef border_radius: 0.0}}
         TextInput{width: Fill height: Fill margin: 6 padding: 2 is_multiline: true text: e.draft
-            on_change: |text| { let x = cur_tab() if x != nil && x.edit != nil { x.edit.draft = text } }
+            on_change: |text| { let x = cur_tab() if x != nil && x.edit != nil { x.edit.draft = text schedule_check(x) } }
             draw_bg +: {color: #xffffff color_hover: #xffffff color_focus: #xffffff color_empty: #xffffff
                 border_color: #x00000000 border_color_hover: #x00000000 border_color_focus: #x00000000 border_color_empty: #x00000000
                 border_size: 0.0}
@@ -3521,12 +3653,13 @@ fn edit_panel(t){
                     RoundedView{width: Fill height: 40 flow: Right align: Align{y: 0.5} padding: Inset{left: 12 right: 12} show_bg: true draw_bg +: {color: pt_field border_size: 1.0 border_color: pt_field_line border_radius: 4.0}
                         Label{padding: 0 width: Fill max_lines: 1 text_overflow: TextOverflow.Ellipsis text: font_text(t.edit) draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}
                     }
+                    if edit_says(t.edit) { edit_notes(t.edit) }
                     View{width: Fill height: Fit padding: Inset{top: pick(short(), 4, 14)} Label{padding: 0 text: "Alignment" draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}}
                     align_segments(t.edit)
                     View{width: Fill height: Fit padding: Inset{top: pick(short(), 4, 14)} Label{padding: 0 text: "Colour" draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 12}}}}
                     colour_box(t.edit)
                     View{width: Fill height: Fit flow: Right margin: Inset{top: pick(short(), 12, 22)} spacing: 14
-                        Primary{width: Fill height: 37 text: "Apply" on_click: || apply_edit(cur_tab())}
+                        Primary{width: Fill height: 37 text: apply_label(t.edit) on_click: || apply_edit(cur_tab())}
                         Outline{width: Fill height: 37 text: "Cancel" on_click: || cancel_edit(cur_tab())}
                     }
                 }
@@ -3535,6 +3668,26 @@ fn edit_panel(t){
     }
 }
 
+// Whether the Edit panel has something to say about the edit before Apply.
+fn edit_says(e){ e.check_error != "" || edit_risks(e.check).len() > 0 || e.pieces > 1 }
+// What the edit would do, under the paragraph's font (pdf.edit_check): why
+// the engine won't make it, or what changes besides the words (another font,
+// text over its neighbours or off the page); and a line the PDF keeps in
+// pieces. Short lines in small type, so Apply stays in view in a short
+// window.
+fn edit_notes(e){
+    View{width: Fill height: Fit flow: Down spacing: 6 padding: Inset{top: pick(short(), 2, 6)}
+        if e.check_error != "" { edit_note("warning", pt_red, e.check_error) }
+        if e.check_error == "" { for r in edit_risks(e.check) { edit_note("warning", pt_orange, r) } }
+        if e.pieces > 1 { edit_note("info", pt_icon, pieces_note(e.pieces)) }
+    }
+}
+fn edit_note(ic, colour, text){
+    View{width: Fill height: Fit flow: Right spacing: 7
+        Ico{width: 14 height: 14 margin: Inset{top: 1} draw_svg +: {svg: icon(ic) color: colour}}
+        Label{padding: 0 width: Fill flow: Flow.Right{wrap: true} text: text draw_text +: {color: pt_ink2 text_style: theme.font_regular{font_size: 11.5 line_spacing: 1.35}}}
+    }
+}
 // Alignment: four segments (left, centre, right, justify), the paragraph's
 // own (guess_align) chosen until another is tapped.
 fn align_segments(e){
