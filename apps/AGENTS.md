@@ -103,8 +103,12 @@ app's own agent and `tools.json`, the system toolbox, `glance.publish` and
   whatever it would refuse), then has that reader, the `zip` crate
   deckcraft opens decks with, read the directory too and refuses any
   difference (`damaged:`), so the guard checks exactly what the engine
-  will read. It classifies the zip with the engine's own sniffers,
-  inflates every entry against its declared size and
+  will read. Its verdict (a native deck by deckcraft's own marker, an
+  Office package by its `[Content_Types].xml` entry, which LibreOffice
+  writes late, past where the engine's own sniff looks) picks the
+  engine's reader (`engine_read`, the steps of the pinned
+  `open_presentation` after its sniff, compared by a test). It inflates
+  every entry against its declared size and
   refuses a nested zip or an audio or video part (`held:`), an encrypted
   `.pptx` (`protected:`) and a legacy `.ppt` or any other file it does not
   know (`unsupported:`); engine-side bounds stay with #448. The one nested

@@ -33,10 +33,13 @@
 //!   method) refuses the file. Any of this, a directory that does not
 //!   parse, an entry outside the file, an encrypted entry or one
 //!   compressed in a way the engine does not read is `damaged:`.
-//! - Then the engine's own sniffers say what it is, in the engine's order:
-//!   a native deck (`deckcraft_format::sniff`) or an Office package
-//!   (`deckcraft_pptx::sniff`). Any other zip (`.key`, `.odp`) is
-//!   `unsupported:`.
+//! - Then the guard says what it is, and its verdict picks the engine's
+//!   reader (`crate::engine_read`): a native deck by deckcraft's own marker
+//!   (`deckcraft_format::sniff`, which the engine tries first), else an
+//!   Office package by its `[Content_Types].xml` entry in the directory the
+//!   guard verified (the engine's `deckcraft_pptx::sniff` looks in a
+//!   package's first 4 KiB only, which no LibreOffice package meets). Any
+//!   other zip (`.key`, `.odp`) is `unsupported:`.
 //! - Then every entry is inflated, bounded, into a scratch buffer (nothing
 //!   is kept but its first bytes): one that inflates past its declared size
 //!   is `damaged:`. Any audio or video part is `held:`, found by its
@@ -85,14 +88,19 @@ pub(crate) const MAX_RATIO: u64 = 100;
 pub(crate) const RATIO_GRACE: u64 = 100 << 10;
 /// The most of `[Content_Types].xml` the guard reads for media types.
 pub(crate) const MAX_TYPES_BYTES: u64 = 1 << 20;
+/// The most extensible data a ZIP64 end record may carry beyond its 44
+/// bytes of fields: the engine's zip reader allocates all of it, and an
+/// honest writer leaves it empty.
+pub(crate) const MAX_ZIP64_EXTRA: u64 = 1024;
 
 /// What the engine will be asked to read, once the guard passed the file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Format {
-    /// deckcraft's own `.deckcraft` zip, as `deckcraft_format::sniff` finds it.
+    /// deckcraft's own `.deckcraft` zip, by its marker as
+    /// `deckcraft_format::sniff` finds it.
     Native,
-    /// An Office Open XML package (`.pptx`), as `deckcraft_pptx::sniff`
-    /// finds it.
+    /// An Office Open XML package (`.pptx`): a `[Content_Types].xml` entry
+    /// in the directory the guard verified.
     Pptx,
     /// Outline text (`.txt`, `.md`).
     Outline,
@@ -213,8 +221,10 @@ const LOCAL: u32 = 0x0403_4b50;
 /// - Whatever that reader refuses in this end record, the ZIP64 record or
 ///   a header, the guard refuses first: a reader that refuses the end
 ///   record it found searches backwards for another one, reading counts
-///   the guard never saw. So the ZIP64 record ends exactly at its locator
-///   and asks for no newer version than wrote it, every disk number is 0,
+///   the guard never saw. So the ZIP64 record ends exactly at its locator,
+///   carries at most [`MAX_ZIP64_EXTRA`] bytes of extensible data (that
+///   reader allocates them) and asks for no newer version than wrote it,
+///   every disk number is 0,
 ///   no entry is encrypted or compressed other than stored or deflated,
 ///   and every extra field is one that reader takes ([`extras`]).
 fn directory(b: &[u8]) -> Result<Directory, String> {
@@ -267,6 +277,9 @@ fn directory(b: &[u8]) -> Result<Directory, String> {
             return Err(unreadable());
         }
         let record_size = u64_at(b, record + 4).ok_or_else(unreadable)?;
+        if record_size > 44 + MAX_ZIP64_EXTRA {
+            return Err(held(format!("the presentation's zip has a ZIP64 end record of {record_size} bytes, more than the {} the deck service opens (#448)", 44 + MAX_ZIP64_EXTRA)));
+        }
         if record_size < 44 || (record as u64).checked_add(12).and_then(|r| r.checked_add(record_size)) != Some(locator as u64) {
             return Err(unreadable());
         }
@@ -722,17 +735,20 @@ fn zip(b: &[u8]) -> Result<Format, String> {
     let dir = directory(b)?;
     read_alike(b, &dir)?;
     let entries = &dir.entries;
-    // What it is, by the engine's own sniffers in the engine's order
-    // (`deckcraft_engine::cmd::file::open_presentation`).
+    // What it is (module doc): a native deck by deckcraft's own marker,
+    // which the engine tries first, else an Office package by its
+    // content-type list in the directory both readers read alike. The
+    // verdict picks the engine's reader (`crate::engine_read`).
+    let package = entries.iter().find(|e| e.name.eq_ignore_ascii_case("[Content_Types].xml"));
     let format = if deckcraft_format::sniff(b) {
         Format::Native
-    } else if deckcraft_pptx::sniff(b) {
+    } else if package.is_some() {
         Format::Pptx
     } else {
         return Err(fail(Code::Unsupported, "this zip is not a presentation the deck engine reads (.pptx or .deckcraft)"));
     };
     // The content types a package declares, whichever reader takes it.
-    let (defaults, overrides) = match entries.iter().find(|e| e.name.eq_ignore_ascii_case("[Content_Types].xml")) {
+    let (defaults, overrides) = match package {
         Some(types) => {
             if types.declared > MAX_TYPES_BYTES {
                 return Err(held(format!("the presentation's content-type list is larger than the {MAX_TYPES_BYTES} bytes the deck service reads (#448)")));
@@ -990,11 +1006,16 @@ pub(crate) mod fixtures {
     /// (counting `on_disk` and `total` entries, needing version `needed`)
     /// and its locator, the end record's own fields at their most.
     pub(crate) fn zip64(parts: &[Part], on_disk: u64, total: u64, needed: u16) -> Vec<u8> {
+        zip64_with(parts, on_disk, total, needed, b"")
+    }
+
+    /// [`zip64`], its end record carrying `extensible` data.
+    pub(crate) fn zip64_with(parts: &[Part], on_disk: u64, total: u64, needed: u16, extensible: &[u8]) -> Vec<u8> {
         let l = layout(parts);
         let record_at = (l.locals.len() + l.central.len()) as u64;
         let mut record = Vec::new();
         record.extend_from_slice(&0x0606_4b50u32.to_le_bytes());
-        record.extend_from_slice(&44u64.to_le_bytes());
+        record.extend_from_slice(&(44 + extensible.len() as u64).to_le_bytes());
         record.extend_from_slice(&45u16.to_le_bytes());
         record.extend_from_slice(&needed.to_le_bytes());
         record.extend_from_slice(&[0u8; 8]);
@@ -1002,6 +1023,7 @@ pub(crate) mod fixtures {
         record.extend_from_slice(&total.to_le_bytes());
         record.extend_from_slice(&(l.central.len() as u64).to_le_bytes());
         record.extend_from_slice(&(l.locals.len() as u64).to_le_bytes());
+        record.extend_from_slice(extensible);
         let mut locator = Vec::new();
         locator.extend_from_slice(&0x0706_4b50u32.to_le_bytes());
         locator.extend_from_slice(&0u32.to_le_bytes());
@@ -1031,14 +1053,18 @@ pub(crate) mod fixtures {
     /// reader and deflated, with `extra` after them: an engine-written
     /// package with parts added.
     pub(crate) fn with_parts(bytes: &[u8], extra: Vec<Part>) -> Vec<u8> {
-        let mut parts: Vec<Part> = super::directory(bytes)
-            .unwrap()
-            .entries
-            .iter()
-            .filter(|e| !e.name.ends_with('/'))
-            .map(|e| Part::deflated(&e.name, &super::inflate(bytes, e, true, &mut |_| {}).unwrap().kept.unwrap()))
-            .collect();
+        with_last(bytes, "", extra)
+    }
+
+    /// [`with_parts`], the entry named `last` moved after every other
+    /// entry and `extra`: a package laid out as LibreOffice writes one,
+    /// its content-type list last.
+    pub(crate) fn with_last(bytes: &[u8], last: &str, extra: Vec<Part>) -> Vec<u8> {
+        let dir = super::directory(bytes).unwrap();
+        let read = |e: &super::Entry| Part::deflated(&e.name, &super::inflate(bytes, e, true, &mut |_| {}).unwrap().kept.unwrap());
+        let mut parts: Vec<Part> = dir.entries.iter().filter(|e| !e.name.ends_with('/') && e.name != last).map(read).collect();
         parts.extend(extra);
+        parts.extend(dir.entries.iter().filter(|e| e.name == last).map(read));
         zip(&parts)
     }
 
@@ -1095,7 +1121,7 @@ pub(crate) mod fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::{end_record, field, layout, layout_from, native, ole, package, zip, zip64, Part};
+    use super::fixtures::{end_record, field, layout, layout_from, native, ole, package, zip, zip64, zip64_with, Part};
     use super::*;
 
     #[track_caller]
@@ -1280,6 +1306,13 @@ mod tests {
         assert!(e.contains("2 entries in all but 3 on this disk"), "{e}");
         coded(check("big.pptx", &zip64(&head(), 2, 3, 45)), "damaged");
         coded(check("big.pptx", &zip64(&head(), 2, 2, 46)), "damaged");
+        // Its extensible data, which the engine's zip reader allocates
+        // whole: up to the cap, then held.
+        let at_cap = vec![7u8; MAX_ZIP64_EXTRA as usize];
+        assert_eq!(check("big.pptx", &zip64_with(&head(), 2, 2, 45, &at_cap)), Ok(Format::Pptx));
+        let over = vec![7u8; MAX_ZIP64_EXTRA as usize + 1];
+        let e = coded(check("big.pptx", &zip64_with(&head(), 2, 2, 45, &over)), "held");
+        assert!(e.contains("ZIP64 end record"), "{e}");
     }
 
     #[test]

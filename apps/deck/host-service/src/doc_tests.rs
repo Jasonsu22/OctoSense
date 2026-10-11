@@ -568,6 +568,64 @@ fn the_import_guard_refuses_before_the_engine_runs_on_every_path() {
     coded(&w.err("open", json!({ "path": "missing.pptx" })), "not_found");
 }
 
+/// The guard's verdict picks the engine's reader (`crate::engine_read`), a
+/// step-for-step copy of what the pinned `open_presentation` does after
+/// its sniff: on every format both read the very same deck, so a step that
+/// function grows on a repin fails here.
+#[test]
+fn the_guards_reader_reads_as_open_presentation() {
+    let deck = sample(5);
+    for (name, bytes, format) in [
+        ("x.deckcraft", native(&deck), guard::Format::Native),
+        ("x.pptx", pptx(&deck), guard::Format::Pptx),
+        ("x.txt", b"Title\n\tPoint\nSecond\n\tAnother point\n".to_vec(), guard::Format::Outline),
+        ("x.md", b"".to_vec(), guard::Format::Outline),
+    ] {
+        assert_eq!(guard::check(name, &bytes), Ok(format), "{name}");
+        assert_eq!(engine_read(name, &bytes, format).unwrap(), engine_file::open_presentation(name, &bytes).unwrap(), "{name}");
+    }
+}
+
+/// A package with its content-type list last, past its first 4 KiB, as
+/// LibreOffice writes every one: the engine's own sniff misses it, the
+/// guard finds it in the directory, and it opens on every path, still
+/// behind every bound of the guard.
+#[test]
+fn a_package_with_its_content_types_late_opens_on_every_path() {
+    let w = World::new();
+    let late = fx::with_last(&pptx(&sample(4)), "[Content_Types].xml", vec![]);
+    let at = late.windows(19).position(|win| win == b"[Content_Types].xml").unwrap();
+    assert!(at > 4096, "the content types sit {at} bytes in");
+    assert!(!deckcraft_pptx::sniff(&late) && engine_file::open_presentation("late.pptx", &late).is_err(), "the engine's own entry point misses it");
+    w.put("late.pptx", &late);
+    let before = engine_reads();
+    let opened = w.ok("open", json!({ "path": "late.pptx" }));
+    assert_eq!(opened["slides"], 4, "{opened}");
+    assert!(w.root.join(w.ok("cover", json!({ "path": "late.pptx" }))["path"].as_str().unwrap()).is_file());
+    assert_eq!(w.ok("info", json!({ "path": "late.pptx" }))["slides"].as_array().map(Vec::len), Some(4));
+    assert!(w.ok("text", json!({ "path": "late.pptx" }))["outline"].as_str().unwrap().contains("Northwind Cooperative"));
+    w.ok("render", json!({ "path": "late.pptx", "out": "late.png" }));
+    w.ok("convert", json!({ "path": "late.pptx", "out": "late.deckcraft" }));
+    w.ok("run", json!({ "path": "late.pptx", "cmds": [] }));
+    assert_eq!(engine_reads(), before + 7, "every path read it through the engine");
+    // Still behind every bound: the same layout with a movie in it, with a
+    // zip bomb in it, or with its entry counts disagreeing never reaches
+    // the engine.
+    let movie = fx::with_last(&pptx(&sample(4)), "[Content_Types].xml", vec![Part::stored("ppt/media/clip.mp4", b"\0\0\0\x18ftypisom")]);
+    let bomb = fx::with_last(&pptx(&sample(4)), "[Content_Types].xml", vec![Part::deflated("ppt/slides/slide9.xml", &vec![0u8; 16 << 20])]);
+    let mut counted = late.clone();
+    let end = counted.len() - 22;
+    let total = u16::from_le_bytes([counted[end + 10], counted[end + 11]]);
+    counted[end + 8..end + 10].copy_from_slice(&(total + 1).to_le_bytes());
+    for (name, bytes, code) in [("late-movie.pptx", movie, "held"), ("late-bomb.pptx", bomb, "held"), ("late-counted.pptx", counted, "damaged")] {
+        w.put(name, &bytes);
+        let before = engine_reads();
+        coded(&w.err("open", json!({ "path": name })), code);
+        coded(&w.err("info", json!({ "path": name })), code);
+        assert_eq!(engine_reads(), before, "{name}: the engine read nothing");
+    }
+}
+
 /// The import guard passes what the engine itself writes, at the sizes the
 /// service allows: a native deck's `presentation.json` repeats itself from
 /// slide to slide, so its compression ratio is the one to watch.

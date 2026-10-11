@@ -613,12 +613,36 @@ pub(crate) fn engine_reads() -> u32 {
 }
 
 /// The one place the engine reads a file's bytes, after the import guard
-/// passed them ([`guard::check`]): `open_presentation` on bytes the service
-/// read itself.
-fn engine_read(name: &str, bytes: &[u8]) -> Result<Presentation, deckcraft_engine::EngineError> {
+/// passed them ([`guard::check`]), with the reader the guard's verdict
+/// names, not the engine's own sniffs: `deckcraft_pptx::sniff` looks for
+/// `[Content_Types].xml` in a package's first 4 KiB only, and LibreOffice
+/// writes that part far later, so `open_presentation` refuses every
+/// package LibreOffice writes; the guard finds it in the directory it
+/// verified.
+///
+/// Each branch is a step-for-step copy of what deckcraft's
+/// `cmd::file::open_presentation` does after its sniff
+/// (`crates/engine/src/cmd/file.rs` lines 58-78 at the pinned d0e57d7e;
+/// re-check them on every repin): a native deck through
+/// `deckcraft_format::load` (59-61), an Office package through
+/// `deckcraft_pptx::import` and then `deckcraft_format::repair` (62-66),
+/// outline text through `open_presentation` itself (67-77), whose sniffs
+/// pass over bytes that are no zip. `doc_tests::the_guards_reader_reads_
+/// as_open_presentation` compares the two on every format, so a step the
+/// pinned function grows fails there.
+fn engine_read(name: &str, bytes: &[u8], format: guard::Format) -> Result<Presentation, deckcraft_engine::EngineError> {
+    use deckcraft_engine::EngineError;
     #[cfg(test)]
     ENGINE_READS.with(|n| n.set(n.get() + 1));
-    engine_file::open_presentation(name, bytes)
+    match format {
+        guard::Format::Native => deckcraft_format::load(bytes).map_err(|e| EngineError::Other(e.to_string())),
+        guard::Format::Pptx => {
+            let mut p = deckcraft_pptx::import(bytes).map_err(|e| EngineError::Other(e.to_string()))?;
+            deckcraft_format::repair(&mut p);
+            Ok(p)
+        }
+        guard::Format::Outline => engine_file::open_presentation(name, bytes),
+    }
 }
 
 /// Read the deck at `rel` for an open-document method or a cover: checked
@@ -629,7 +653,7 @@ pub(crate) fn read_guarded(area: &Area, rel: &str, key: &str, m: &str) -> Result
     let bytes = std::fs::read(&path).map_err(|e| invalid(format!("{rel}: {e}")))?;
     let name = normal(rel);
     let format = guard::check(&name, &bytes)?;
-    let deck = engine_read(&name, &bytes).map_err(|e| {
+    let deck = engine_read(&name, &bytes, format).map_err(|e| {
         let words = e.to_string();
         if words.contains("not a presentation DeckCraft can read") {
             fail(Code::Unsupported, "this is not a presentation the deck engine reads (.pptx, .deckcraft, or outline .txt or .md)")
@@ -692,8 +716,8 @@ fn read_deck(args: &Json, area: &Area, method: &str) -> Result<(Session, String)
         return Err(format!("deck.{method}: the file is larger than the service reads"));
     }
     let bytes = std::fs::read(&path).map_err(|e| format!("deck.{method}: {rel}: {e}"))?;
-    guard::check(&rel, &bytes)?;
-    let doc = engine_read(&rel, &bytes).map_err(|e| format!("deck.{method}: {e}"))?;
+    let format = guard::check(&rel, &bytes)?;
+    let doc = engine_read(&rel, &bytes, format).map_err(|e| format!("deck.{method}: {e}"))?;
     let mut s = Session::new();
     engine_file::add_opened(&mut s, &rel, None, doc);
     Ok((s, rel))

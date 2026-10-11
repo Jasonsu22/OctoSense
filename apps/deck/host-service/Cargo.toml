@@ -43,8 +43,10 @@ flate2 = "1"
 # (src/guard.rs `read_alike`): deckcraft's own version and features
 # (its root Cargo.toml), which a test keeps the same crate in Cargo.lock.
 zip = { version = "3", default-features = false, features = ["deflate"] }
-# The engine's sniffer for an Office package (the guard classifies a zip
-# as the engine's `open_presentation` does).
+# The engine's Office package reader, which the service calls itself for a
+# package the import guard classified (src/lib.rs `engine_read`, the steps
+# of the engine's `open_presentation`), since the engine's own sniff misses
+# a package whose content-type list comes late, as LibreOffice writes them.
 deckcraft-pptx = { workspace = true }
 
 [dev-dependencies]
