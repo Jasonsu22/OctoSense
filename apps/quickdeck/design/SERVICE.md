@@ -135,9 +135,17 @@ commands it runs (engine d0e57d7e; classes from `skill/safety.json`).
   that opens a file: `deck.open`, `deck.cover`, the v1 file methods and the
   agent's `deck.info`. It refuses with `held:` more than 10,000 entries, any
   entry declaring over 64 MiB uncompressed, a declared total over 256 MiB, a
-  compression ratio over 100 to 1, a zip inside the zip, and any audio or
-  video part (by content type or extension). A directory that doesn't parse,
-  or an entry that inflates past its declared size, is `damaged:`. An OLE file (`D0 CF 11 E0`) is
+  compression ratio over 100 to 1 (parts up to 100 KiB are exempt), a name
+  over 1,024 bytes, a zip inside the zip outside `ppt/embeddings/`, and any
+  audio or video part (by content type, extension or file signature). In a
+  `.pptx`, an embedded Office object under `ppt/embeddings/` (a chart's
+  workbook) is a zip too; it stays within every other bound, and neither the
+  service nor the engine ever unzips it. A native deck has no embedded
+  objects, so a nested zip in one is `held:`. A directory that doesn't parse, an entry that
+  inflates past its declared size, an encrypted entry, an unknown
+  compression method or a multi-disk zip is `damaged:`. Large (ZIP64)
+  directories are read. A zip that is neither a deckcraft deck nor an Office
+  package is `unsupported:`. An OLE file (`D0 CF 11 E0`) is
   `protected:` when it holds an `EncryptedPackage` stream, and
   `unsupported:` otherwise (a legacy `.ppt`).
 
@@ -208,7 +216,7 @@ notes at most 20,000 characters.
 | `deck.insert` | `{doc, slide, kind: "text", rect?, text?}` | `{id}` | `insert.textBox {rect, text}` |
 | `deck.insert` | `{doc, slide, kind: "shape", preset, rect?, text?}` | `{id}` | `shape.insert {preset, rect, text}` (the service centres a default `rect`) |
 | `deck.insert` | `{doc, slide, kind: "picture", path, rect?}` | `{id, size: [w, h]}` | `insert.picture {path, rect}`, a reviewed read inside storage |
-| `deck.insert` | `{doc, slide, kind: "table", rows, cols, rect?, cells?, style?}` | `{id}` | `insert.table {rows, cols, rect}`, `text.set {id, text, cell}` per cell, `table.style {style, id}` |
+| `deck.insert` | `{doc, slide, kind: "table", rows, cols, rect?, cells?, style?}` | `{id}` | `insert.table {rows, cols, rect, data}` (the cells' text in one command), `table.style {style, id}` |
 | `deck.insert` | `{doc, slide, kind: "chart", type, categories, series: [{name, values}], rect?, title?}` | `{id}` | `insert.chart {type, rect, categories, series}`, `chart.options {title, id}` |
 | `deck.set_text` | `{doc, slide, id, text, cell?: [r, c]}` | `{id}` | `edit.select`, `text.edit {id, at, cell}`, `text.select {anchor, caret}`, `text.insert {text}`, `text.exit {}`; `text.set {id, text, cell}` when the box is empty |
 | `deck.format` | `{doc, slide, ids, paragraphs?: [first, last], font?, size?, bold?, italic?, underline?, strike?, color?, highlight?, align?, bullets?, numbering?, level?, line_spacing?, space_before?, space_after?, anchor?, autofit?, columns?, margins?}` | `{}` | `edit.select {ids}` (or `text.edit` and `text.select` over the paragraphs), then `format.font`, `format.size`, `format.bold`, `format.italic`, `format.underline`, `format.strikethrough`, `format.color`, `format.highlight`, `format.align`, `format.bullets`, `format.numbering`, `format.indent` / `format.outdent`, `format.lineSpacing`, `format.paragraph`, `format.anchor`, `format.autofit`, `format.columns`, `format.margins` |
@@ -251,8 +259,9 @@ notes at most 20,000 characters.
   has at most 10,000 data points; a text has at most 1,000 line breaks; no
   position or size goes past 100,000 pt; and one call's picture reads total
   at most 64 MiB. Beyond the door, a call names at most 500 shapes, and a
-  `cells` fill holds at most 1,024 cells (decision 2); a larger table gets
-  the rest of its text cell by cell through `deck.set_text`.
+  `cells` fill holds at most 1,024 cells, passed to `insert.table` as its
+  `data`; a larger table gets the rest of its text cell by cell through
+  `deck.set_text`.
 
 ## Design
 
@@ -323,16 +332,17 @@ file, and neither changes it without the coordinator.
 2. **The gate's count: a count of the method's own.** App methods build their
    engine commands from reviewed values; each method declares the most
    commands one call may make, with its reason beside it (a table fill sets
-   at most 1,024 cells a call; the app fills a larger table over several
-   calls). Every command still passes the door's allowlist and its `Limit`s;
-   chunking a call to dodge a cap is not allowed.
+   at most 1,024 cells a call, in one `insert.table`; the app fills a larger
+   table over several calls). Every command still passes the door's
+   allowlist and its `Limit`s; chunking a call to dodge a cap is not allowed.
 3. **Undo folding: the engine's public `History`, now.** One call is one undo
    step, proven by a test. A grouping API in deckcraft is a follow-up, not a
    blocker.
 4. **The import guard: the service's own, before the engine sees a byte.**
    "Open a presentation from this device" goes through it: the zip's central
    directory read with bounds (entries, names, declared and actual sizes,
-   compression ratio, nesting), embedded audio and video refused, and every
+   compression ratio, nesting outside `ppt/embeddings/`), embedded audio and
+   video refused, and every
    refusal answered as the Import guard above says (`held:`, `damaged:`,
    `protected:` or `unsupported:`) with plain words. Hostile
    fixtures (a zip bomb, a lying declared size, ten thousand entries, media)
@@ -366,3 +376,48 @@ BRIEF.md's open questions are settled too:
 
 Quick Deck's manifest asks for a 1536 x 1024 window (`"schema_minor": 1`),
 as PDF Tools does.
+
+## As built in #503 (coordinator, 11 Oct 2026)
+
+The deck service (OctoSense #503) follows this file with these settled
+changes; where they differ from the sections above, they win.
+
+- **Method-only commands.** `shape.fill` and `design.background` are classed
+  `file` (a `picture` or `path` reads a file), so `deck.run` refuses them.
+  An app method runs them through the door's `admit_method` with reviewed
+  values only: a colour, a gradient, `none` or `reset`. The door refuses a
+  `picture` or `path` from a method too.
+- **How some commands run.** Hide, layout and transition go through
+  `slide.selectSlides` and one command. Reset and a per-slide background
+  each take a `slide.go` first. Theme, colours and fonts go to each master
+  in use (at most 16). The engine copies the current slide on every edit,
+  so this keeps `changed` right and copies few.
+- **`deck.set_text`** runs `edit.select`, `text.edit`, `text.select` over
+  the changed span, `text.delete`, `text.select` again and `text.insert`,
+  so the new text takes the format of the span's first character, then
+  `text.exit`. An empty box takes `text.set` only when no paragraph starts
+  with a tab, because `text.set` reads a leading tab as an outline level.
+- **More caps.**
+  - A picture is at most 50 megapixels and PNG, JPEG, GIF, BMP, WebP or TIFF.
+  - `deck.cover`: `width` 48 to 3840 px, default 320.
+  - `deck.layouts`: at most 64 layouts and 16 megapixels a call.
+  - `deck.create`: a title at most 2,000 characters, a body or notes at
+    most 20,000, an outline at most 200,000.
+  - `deck.set_text`: at most 100,000 characters, a cell 10,000.
+  - A section name: at most 256 characters.
+- **Answers.**
+  - `deck.slides`: `notes` is a preview of at most 200 characters, and
+    `layout` is the layout's id.
+  - `deck.format`: `level` is relative (-8 to 8), and `highlight: "none"`
+    clears it.
+  - `deck.transition`: `duration` is in milliseconds.
+  - `deck.show`: `steps` counts clicks only; a build that starts on its own
+    is part of step 0. `advance_after` is in seconds, and only shows when
+    the show uses timings.
+- **Fonts at startup.** A deck call made while the engine's font warm-up is
+  still running waits for it (`src/warm.rs`): the engine's font database
+  can't load one family on two threads at once, which drew a title in the
+  wrong fallback font. The wait is never longer than the warm-up, and work
+  stays on the UI thread (#399).
+- **Dependencies.** `deckcraft-anim` and `deckcraft-fonts`, at the pinned
+  deckcraft revision.
