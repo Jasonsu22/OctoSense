@@ -92,7 +92,7 @@ OctoSense repository into the same workspace, then run this from your App Flow c
 
 ### Shared appearance
 
-News, Photos, Mail, Calendar, Maps, AI providers, YouTube, PDF Tools and Writer share the interface
+News, Photos, Mail, Calendar, Maps, AI providers, YouTube, Quick Deck, PDF Tools and Writer share the interface
 in [`interface.splash`](interface.splash): theme-aware page/card/field surfaces,
 readable secondary text, 44-point actions and 48-point inputs. Desktop content
 has a maximum width; narrow windows keep the same actions. Camera and media
@@ -131,7 +131,7 @@ profiles. Phone-sized desktop captures are not physical-device verification.
 | [AI providers](ai-providers/bundle) | `os.ai-providers` | The assistant's LLM providers: a primary and fallbacks, each with a model pull-down from octos's catalog and Test connection; an add wizard (family, model, route, key, test); Show QR for phone and import by camera, image or paste | `storage`, `llm` | none (the service connects, not the app) | [`llm`](ai-providers/host-service) |
 | [YouTube](youtube/bundle) | `os.youtube` | YouTube search (the runtime's keyless `sys.video`, which reads YouTube's own results page), result rows with thumbnails and LIVE or length badges, topic chips, playback of YouTube's mobile watch page in `WebReader`, and a history of what was played on this device | `storage`, `net`, `glance` | `www.youtube.com`, `m.youtube.com`, `i.ytimg.com` | `youtube.notify` via the shell notice service |
 | [Calendar](calendar/bundle) | `os.calendar` | Month/day calendar, event details and editor; app-owned event/agenda cards in Glance, with saved-event navigation | `calendar`, `glance` | none | [`calendar`](calendar/host-service) (Calendar-owned executor; granted cross-app tools) |
-| [Quick Deck](quickdeck/bundle) | `os.quickdeck` (desktop) | An outline becomes a deck in four steps: write the slides (a title and points each), generate, review every slide (a thumbnail grid, and a slide view with a strip), export PowerPoint or PDF; keeps a list of its decks | `storage`, `deck` | none | [`deck`](deck/host-service): `new`, `info`, `render`, `convert`, in Quick Deck's own storage |
+| [Quick Deck](quickdeck/bundle) | `os.quickdeck` (desktop) | A presentation editor: a library of decks with their covers, an editor with a slide navigator, a canvas and an inspector (Format, Layout, Theme, Notes), text edited in place, pictures, shapes, tables and charts with their data, a slide sorter with sections, New from an outline (typed, or drafted by the person's own AI provider), Present and Export (.pptx, PDF, pictures); open a presentation from the device. See [its README](quickdeck/README.md), with the runs that test it | `storage`, `files`, `deck`, `model` | none | the [`deck`](deck/host-service) engine service's open-document methods in [design/SERVICE.md](quickdeck/design/SERVICE.md), in the app's own storage; the shell's `files.status` and `files.import`; `model.complete` for Draft with AI |
 | [PDF Tools](pdftools/bundle) | `os.pdftools` (desktop) | The PDFs in its own storage: a library with each first page, a document view with page thumbnails, text with find, and info; a page view; merge in three steps (choose, order, done) and split every few pages or where you choose; open a PDF from the device (up to 64 MiB) and remove one. See [its README](pdftools/README.md), with the hidden-shell journey that tests it | `storage`, `files`, `pdf` | none | the [`pdf`](pdf/host-service) engine service in the app's own storage: `pdf.info`, `pdf.render`, `pdf.text`, `pdf.merge`, `pdf.split`; the shell's `files.status` and `files.import` |
 | [Writer](writer/bundle) | `os.writer` (desktop) | A calm editor on a white page (a line starting with `#` is a heading, `-` a bullet, `>` a quote), a document list, Save as a Word document, a preview of the saved document with an outline from its headings, and export to PDF, Markdown, HTML or OpenDocument; drafts autosave in the app's storage | `storage`, `word` | none | [`word`](word/host-service) (`word.convert`, `word.info`, `word.inspect`), in Writer's own storage |
 | [AppCard](appcard) | native, opt-in | The AppCard assistant: a routing brain picks or composes an app agent, which generates a live Splash or webview card. Shells link it only with `app-appcard`; not shipped by default | n/a (not a bundle) | n/a | the shell's octos kernel |
@@ -225,18 +225,12 @@ See [capabilities and execution boundaries](../docs/capabilities.md).
   sheet came up, the agent added an event and its card opened the glance
   panel. Not packed on the phone. Its host service's tests are not in
   `apps.yml` yet.
-- **Quick Deck** (2026-10-09, macOS, hidden windows, light and dark): run end
-  to end in a desktop shell built from its branch. A typed outline became a
-  deck through `deck.new`, `deck.info` and one `deck.render` per slide, all
-  writing into Quick Deck's own storage (`decks/<id>/g<n>/`); the review grid
-  and the slide view show the engine's PNGs, and the PowerPoint and PDF
-  exports land beside them. Refusals show in the app: a nearly full storage,
-  a deck file the engine can't read, and a path outside the storage. A light
-  or dark switch keeps the screen the person is on. The `deck` service runs on
-  the shell's UI thread (#399), so the shell pauses while it works: about 3 s
-  for a five-slide deck, 16 s on the very first call of a session. Every
-  screen and state, refusals included, is also covered in `card-host` by
-  `quickdeck/tests/ui.py` with the dev fixture below.
+- **Quick Deck v2** (2026-10-11): see [its README](quickdeck/README.md#status).
+  In App Hub's `card-host`, light and dark: every designed screen and state
+  on the dev fixture, and the shipped bundle with no engine. In a hidden
+  desktop shell on Linux (headless weston) with the real `deck` engine of
+  #503: a deck made from an outline, text edited in place, a format, a chart, a theme, notes, the sorter, save, export and Present, light then dark, then a restart. The model tests pass (`cargo test --locked
+  -p octosense-shell --lib quickdeck_model`).
 - **Writer** (2026-10-09). In a hidden desktop shell built from this tree
   (`MAKEPAD_WM_TEST_APP=writer`, a hidden `--remote` run, light and dark),
   with the real `word` engine working in Writer's own storage: a document
@@ -317,6 +311,7 @@ calendar/host-service/       octosense-calendar-service, the `calendar` host ser
 news/host-service/           octosense-news-service, the `news` host service (News's data service)
 pdf/host-service/            octosense-pdf-service, the `pdf` host service (the pdfcraft engine, ADR 0013); examples/pdftools_fixture.rs writes PDF Tools' sample PDFs for its tests
 pdftools/                    PDF Tools: bundle/, tests/ui.py (its hidden-shell journey), README.md
+quickdeck/                   Quick Deck: bundle/, design/ (brief, designs, maps, SERVICE.md), dev-fixture/, tests/ui.py, README.md
 <name>/bundle/tools.json     app tools: News, Mail, Calendar, Photos, Maps, YouTube, Camera
 <family>/host-service/tools.json  the craft engines' tools (word, deck, cad, light, sound, design, film, effect, vector, pdf), the system agent's (ADR 0013)
 ../crates/shell/src/glance_notice.rs   shared notice service; ../crates/shell/resources/glance/notice.card
@@ -465,26 +460,14 @@ desktop builds, so they read `MAKEPAD_APP_CONFIG` as a local command-line
 setting; on a real phone the demo needs a development test build
 (`rom/scripts/build-home.py --dev-mode`).
 
-**Quick Deck's dev fixture.** `card-host` has no `deck` service, and the
-shipped bundle has no fixture code. Quick Deck's UI tests use
-`quickdeck/dev-fixture/`, outside the bundle: `engine.splash`, a stand-in for
-the engine that writes what each call asks for at the paths it is given;
-`fixture.json`, its settings; and real renders of `outline.txt` by the pinned
-deckcraft (d0e57d7e), for its pictures. `quickdeck/tests/ui.py` makes a
-scratch copy of the bundle with `engine.splash` in place of `deck_call()`,
-copies the fixture into the app's storage as `dev/`, and drives every screen
-and state in a hidden `card-host`, light and dark. Its first run uses the
-shipped bundle as it is, which shows that no engine answers.
-
-```sh
-python3 apps/quickdeck/tests/ui.py --card-host <App Hub>/target/release/card-host --output target/quickdeck-ui
-```
-
-The grabs and a receipt per appearance land in `target/quickdeck-ui/light`
-and `target/quickdeck-ui/dark`. In `fixture.json`, `delay` is the seconds each
-call takes, `fail` names a call that fails (`new`, `info`, `render`, `convert`
-or `all`), and `unreadable: true` answers `render` without leaving a picture,
-so each slide shows its text.
+**Quick Deck's tests.** The shipped bundle has one engine path,
+`host.request("deck.*")`, and no fixture code. Its rules are pure functions,
+run in a script VM by `../crates/shell/src/quickdeck_model_tests.rs`;
+`quickdeck/tests/ui.py` runs every designed screen and state in `card-host`
+on the dev fixture (`quickdeck/dev-fixture/`: `engine.splash`, a stand-in for
+the engine, and `make_fixture.py`, the designs' sample decks), and the real
+engine's journey in a hidden desktop shell. Commands and what each run
+covers: [quickdeck/README.md](quickdeck/README.md#testing).
 
 **Writer's tests.** The shipped bundle has one engine path,
 `host.request("word.*")`, and no fixture code. Its text rules (what the list
