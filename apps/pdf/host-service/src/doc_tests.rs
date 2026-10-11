@@ -623,6 +623,56 @@ fn fields_fill_and_fill_and_sign() {
     coded(&w.err("fill_sign", json!({"doc": lease, "page": 1, "kind": "check"})), "invalid");
 }
 
+/// A 4 × 4 PNG: an image signature the engine would read.
+const SIGNATURE_PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x08, 0x06, 0x00, 0x00, 0x00, 0xa9, 0xf1, 0x9e,
+    0x7e, 0x00, 0x00, 0x00, 0x12, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x10, 0x50, 0x68, 0xf8,
+    0x8f, 0x8c, 0x19, 0x48, 0x17, 0x00, 0x00, 0x7a, 0xe9, 0x1a, 0xf1, 0x2c, 0xd2, 0xc2, 0x5d, 0x00,
+    0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
+/// Since the engine's upstream sync, `fill_sign_add` reads an image
+/// signature or initials from the file its `path` names (`file` in
+/// skill/safety.json). `pdf.fill_sign` never lets a caller name one: `path`,
+/// and the command's other new keys `format` and `language`, are refused
+/// before any engine work, whatever the kind; the service builds the
+/// command's arguments itself.
+#[test]
+fn fill_sign_never_reads_a_file() {
+    let w = World::new().samples();
+    w.put("sig.png", SIGNATURE_PNG);
+    // The engine itself reads the file `path` names into the document.
+    let mut engine = Automation::new().with_root(&w.root).unwrap();
+    let (d, _) = open(&mut engine, "Apartment lease.pdf").unwrap();
+    run(&mut engine, "fill_sign_add", &json!({"doc": d, "page": 1, "type": "signature", "at": [60, 300], "path": "sig.png"})).unwrap();
+    let listed = run(&mut engine, "comment_list", &json!({"doc": d})).unwrap();
+    assert_eq!(listed["comments"].as_array().map(Vec::len), Some(1), "the engine placed the image: {listed}");
+
+    // Through the service, none of those keys gets through.
+    let doc = w.open("Apartment lease.pdf");
+    for (kind, extra) in [
+        ("initials", json!({"path": "sig.png"})),
+        ("initials", json!({"text": "SR", "path": "sig.png"})),
+        ("text", json!({"text": "Sam Rivera", "path": "sig.png"})),
+        ("signature", json!({"path": "sig.png"})),
+        ("check", json!({"path": "sig.png"})),
+        ("date", json!({"format": "yyyy-mm-dd"})),
+        ("date", json!({"language": "de"})),
+    ] {
+        let mut args = json!({"doc": doc, "page": 1, "kind": kind, "at": [60, 300]});
+        args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let e = w.err("fill_sign", args.clone());
+        coded(&e, "invalid");
+        assert!(e.contains("is not one of them"), "{args}: {e}");
+    }
+    assert_eq!(w.ok("comments", json!({"doc": doc}))["comments"], json!([]), "nothing reached the document");
+    assert_eq!(w.ok("state", json!({"doc": doc}))["edited"], false);
+    // Without them, initials are typed, as before.
+    assert_eq!(w.ok("fill_sign", json!({"doc": doc, "page": 1, "kind": "initials", "at": [60, 300], "text": "SR"})), json!({"added": true}));
+    assert_eq!(w.ok("comments", json!({"doc": doc}))["comments"].as_array().map(Vec::len), Some(1));
+}
+
 /// `pdf.fields` marks a read-only field, and `pdf.fill` refuses one as
 /// `invalid:` before the engine sees the call: nothing of it is filled.
 #[test]
