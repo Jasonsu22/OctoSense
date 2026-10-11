@@ -121,8 +121,10 @@ two kinds apart by the file's preamble, and a bundle may carry both.
   background surface may call are available. `wasm.*` is refused, since the app's worker is busy with
   the call, and the call's deadline bounds the wait.
 
-**Socket compatibility:** this support is unreleased; desktop RC5 rejects socket
-imports. Socket bundles must keep `host-api-v1` and `wasm-components-v1` in
+**Socket compatibility:** desktop [RC6](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.6)
+includes TCP, UDP and DNS support on macOS, Windows and Linux. Desktop RC5
+rejects socket imports. This desktop release does not update Android Home.
+Socket bundles must keep `host-api-v1` and `wasm-components-v1` in
 `requires` and declare `host_api.required: {"wasm.sockets": 1}`. The SDK adds
 this automatically when it detects socket imports, and App Hub verifies it
 for bundled and shared components. `wasm.sockets` is a runtime compatibility
