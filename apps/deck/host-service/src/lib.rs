@@ -657,6 +657,10 @@ pub(crate) fn read_guarded(area: &Area, rel: &str, key: &str, m: &str) -> Result
         let words = e.to_string();
         if words.contains("not a presentation DeckCraft can read") {
             fail(Code::Unsupported, "this is not a presentation the deck engine reads (.pptx, .deckcraft, or outline .txt or .md)")
+        } else if words.contains("is not a presentation part") {
+            // An Office package whose main part is a document or a workbook
+            // (`deckcraft_pptx::import`'s refusal of a .docx or a .xlsx).
+            fail(Code::Unsupported, "this is an Office document but not a presentation, which the deck engine doesn't read (.pptx, .deckcraft, or outline .txt or .md)")
         } else {
             fail(Code::Damaged, format!("the deck engine couldn't read it: {words}"))
         }

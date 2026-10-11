@@ -1068,6 +1068,22 @@ pub(crate) mod fixtures {
         zip(&parts)
     }
 
+    /// The zip `bytes` again (as [`with_parts`]), the entry named `name`
+    /// rewritten by `edit`.
+    pub(crate) fn with_rewritten(bytes: &[u8], name: &str, edit: impl Fn(&[u8]) -> Vec<u8>) -> Vec<u8> {
+        let dir = super::directory(bytes).unwrap();
+        let parts: Vec<Part> = dir
+            .entries
+            .iter()
+            .filter(|e| !e.name.ends_with('/'))
+            .map(|e| {
+                let data = super::inflate(bytes, e, true, &mut |_| {}).unwrap().kept.unwrap();
+                Part::deflated(&e.name, &if e.name == name { edit(&data) } else { data })
+            })
+            .collect();
+        zip(&parts)
+    }
+
     /// A native deck's skeleton: its `mimetype` and `presentation.json`.
     pub(crate) fn native(extra: Vec<Part>, json: &str) -> Vec<u8> {
         let mut parts = vec![Part::stored("mimetype", deckcraft_format::MIMETYPE.as_bytes()), Part::deflated("presentation.json", json.as_bytes())];

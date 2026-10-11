@@ -127,7 +127,12 @@ app's own agent and `tools.json`, the system toolbox, `glance.publish` and
   most 32, kept across closes and named by the file's name, size and
   modification time (`src/covers.rs`). Slide drawings go before covers,
   each oldest first, and the whole cache is cleared before a write would
-  fail with `storage_full:`. Errors start with a stable code
+  fail with `storage_full:`. What the inspector shows beyond the
+  commands' answers (a box's anchor and autofit, a chart's and a table's
+  options, the deck's colour and font schemes and its footer, the engine's
+  colour schemes with their colours) the service reads from the open
+  document's model, read-only (`src/reading.rs`, `docs::design_state`).
+  Errors start with a stable code
   (`src/codes.rs`). Every call first waits for a warm-up that is still
   running (`src/warm.rs`): deckcraft's font database cannot load one
   family on two threads at once, and a slide drawn during that race kept
