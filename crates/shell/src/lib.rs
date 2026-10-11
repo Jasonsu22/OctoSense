@@ -19,6 +19,7 @@ pub mod ai_bus;
 pub mod app_chat;
 pub mod app_storage;
 pub mod dev_mode;
+pub mod launch_input;
 pub mod approvals;
 pub mod apps;
 pub mod binds;
@@ -5443,17 +5444,14 @@ impl App {
 
     /// `--test-action <name>` fires one WmAction at startup, so every
     /// binding can be driven from a script even where the host OS keeps a
-    /// chord for itself.
+    /// chord for itself. Command-line flags, which only the local user can
+    /// pass, work in every build. The app config's `test_actions` arrive
+    /// with a launch that another app may have made (an Android intent
+    /// extra), so only a development build takes them (`launch_input`).
     fn run_test_actions(&mut self, cx: &mut Cx) {
         let mut args: Vec<String> = std::env::args().collect();
-        if let Ok(config) = std::env::var("MAKEPAD_APP_CONFIG") {
-            if let Ok(config) = makepad_strict_json::parse(config.as_bytes()) {
-                if let Some(actions) = config.get("test_actions").and_then(|v| v.as_arr()) {
-                    for action in actions.iter().filter_map(|v| v.as_str()) {
-                        args.extend(["--test-action".into(), action.into()]);
-                    }
-                }
-            }
+        for action in launch_input::test_actions() {
+            args.extend(["--test-action".into(), action]);
         }
         let mut i = 0;
         while i < args.len() {

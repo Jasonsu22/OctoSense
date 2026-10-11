@@ -7,6 +7,7 @@ import io
 import json
 from pathlib import Path
 import re
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -49,6 +50,37 @@ class OpenHarmonyIconTests(unittest.TestCase):
                     for target, name in mapping.items():
                         self.assertEqual((base / target).read_bytes(), (source / name).read_bytes())
             self.assertEqual((entry_media / "unrelated.png").read_bytes(), b"keep")
+
+
+class OpenHarmonyLaunchParameterTests(unittest.TestCase):
+    """Any app can start Home's exported ability with parameters, and Makepad
+    turns each `makepad.*` one into environment variables: only a development
+    build passes them on."""
+
+    def test_the_product_ability_forwards_none_by_default(self):
+        source = (ROOT.parent / "phone/ohos/EntryAbility.ets").read_text()
+        self.assertEqual(source.count(ohos.FORWARD_LAUNCH_PARAMETERS), 1)
+        self.assertLess(source.index("if (FORWARD_LAUNCH_PARAMETERS)"), source.index("want.parameters"),
+                        "the parameters are read only behind the switch")
+
+    def test_only_a_dev_mode_build_forwards_them(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            staged = project / "entry/src/main/ets/entryability/EntryAbility.ets"
+            ohos.stage_entry_ability(project, ROOT.parent / "phone", False)
+            self.assertEqual(staged.read_text(), (ROOT.parent / "phone/ohos/EntryAbility.ets").read_text())
+            ohos.stage_entry_ability(project, ROOT.parent / "phone", True)
+            text = staged.read_text()
+            self.assertIn("const FORWARD_LAUNCH_PARAMETERS: boolean = true;", text)
+            self.assertNotIn(ohos.FORWARD_LAUNCH_PARAMETERS, text)
+
+    def test_a_dev_mode_build_needs_its_own_bundle_id(self):
+        argv = ["build-home-ohos.py", "--deveco-home", "/deveco", "--signing-config", "/private/signing.json",
+                "--packager", "/tools/cargo-makepad", "--dev-mode"]
+        with mock.patch.object(sys, "argv", argv), contextlib.redirect_stderr(io.StringIO()) as err, \
+                self.assertRaises(SystemExit):
+            ohos.main()
+        self.assertIn("separate --bundle-id", err.getvalue())
 
 
 class BuildTests(unittest.TestCase):
