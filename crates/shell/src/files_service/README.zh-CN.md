@@ -60,7 +60,9 @@ qarma、matedialog 或 kdialog。不支持时状态返回 false，发现接口�
 集成点：在 `apps.rs` 的平台服务注册旁调用 `files_service::register()`；在
 `lib.rs` 的平台事件处理旁调用 `files_service::handle_event(cx, event)`，并保持
 在 App Hub 服务互斥锁外执行。将原生音频使用的宿主焦点应用或展开 Glance 归属
-同时传给 `files_service::set_foreground_app`。App Hub 合约需要认识 `files` 并提供
+同时传给 `files_service::set_foreground_app`：即焦点窗口的脚本应用清单 ID
+（`ClientSlot::foreground_app`，在窗口打开时记录），系统应用的 `os.<name>`
+与已安装应用自己的 ID 同样有效。App Hub 合约需要认识 `files` 并提供
 `Replier::isolate_key`；Makepad 需要包含对应的存储和选择器适配器。
 运行时可为原生 `fs.write_bytes` 声明 `storage.binary_write@1` 特性。
 

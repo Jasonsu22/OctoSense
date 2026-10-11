@@ -94,7 +94,10 @@ does not assert that a document provider is installed or that device UI was test
 Shell integration: register `files_service::register()` beside platform service
 registration in `apps.rs`; call `files_service::handle_event(cx, event)` beside the
 platform service event handler in `lib.rs`, outside the App Hub service mutex. Feed `files_service::set_foreground_app` from the
-same host-owned focused-client/expanded-Glance identity used for native audio.
+same host-owned focused-client/expanded-Glance identity used for native audio:
+the focused client's script-app manifest id (`ClientSlot::foreground_app`,
+recorded when the window opens), a system app's `os.<name>` as much as an
+installed app's own id.
 The App Hub contract must know `files` and provide `Replier::isolate_key`; Makepad
 must include the corresponding storage/dialog adapter. Runtime discovery can
 advertise `storage.binary_write@1` for the native `fs.write_bytes` method.
