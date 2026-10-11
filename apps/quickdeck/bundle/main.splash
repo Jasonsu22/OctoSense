@@ -684,10 +684,74 @@ fn open_head(state){
     if state == "full" { return "Quick Deck has " + MAX_OPEN + " decks open" }
     "Couldn't open this deck"
 }
+// The inspector's states (SERVICE.md "Inspector states (#507)"): a control
+// shows a change on its way (`pending`), else what the service reports, else
+// the engine's default (deckcraft model/src/chart.rs, table.rs).
+fn pending_or(pending, known, key, fallback){
+    let p = optional(pending, key, nil)
+    if p != nil { return p }
+    optional(known, key, fallback)
+}
+// A legend shows unless the chart says "none" (the service's word for off).
+fn legend_shown(legend){
+    if legend == nil { return false }
+    let l = "" + legend
+    l != "" && l != "none"
+}
+fn chart_state(ch, pending){
+    let title = optional(pending, "title", nil)
+    if title == nil { title = ("" + optional(ch, "title", "")) != "" }
+    let palette = "" + pending_or(pending, ch, "palette", "colorful1")
+    {title: title == true legend: legend_shown(pending_or(pending, ch, "legend", "b"))
+        data_labels: pending_or(pending, ch, "data_labels", false) == true
+        gridlines: pending_or(pending, ch, "gridlines", true) == true
+        palette: palette mono: palette.search("monochrome") == 0}
+}
+// A table's six style options, as deck.table {op: "options"} takes them.
+fn table_options(tb, pending){
+    let o = optional(tb, "options", {})
+    {header_row: pending_or(pending, o, "header_row", true) == true
+        total_row: pending_or(pending, o, "total_row", false) == true
+        banded_rows: pending_or(pending, o, "banded_rows", true) == true
+        first_column: pending_or(pending, o, "first_column", false) == true
+        last_column: pending_or(pending, o, "last_column", false) == true
+        banded_columns: pending_or(pending, o, "banded_columns", false) == true}
+}
+// A text box's vertical alignment and autofit as format_state reports them
+// (an imported deck may also say justified or distributed).
+fn box_state(fmt){
+    let autofit = "" + optional(fmt, "autofit", "")
+    {anchor: "" + optional(fmt, "anchor", "") autofit: autofit shrink: autofit == "shrink"}
+}
+// The deck's footer, in the keys deck.design {footer} takes.
+fn footer_state(f, pending){
+    {slide_numbers: pending_or(pending, f, "slide_numbers", false) == true
+        date: pending_or(pending, f, "date", false) == true
+        footer: pending_or(pending, f, "footer", false) == true
+        footer_text: "" + pending_or(pending, f, "footer_text", "")}
+}
+// The colour set to mark: one chosen and on its way, else the deck's
+// (deck.open, deck.state), else its theme's own.
+fn scheme_mark(chosen, scheme, theme){
+    if ("" + chosen) != "" { return "" + chosen }
+    if ("" + scheme) != "" { return "" + scheme }
+    "" + theme
+}
+// The font pair to mark: one chosen and on its way, else the deck's by name,
+// else the pair with the deck's families (a built-in theme's own pair is
+// named after the theme: Harbor's is Classic's Merriweather and Open Sans).
+fn font_mark(chosen, scheme, pairs, major, minor){
+    if ("" + chosen) != "" { return "" + chosen }
+    for f in pairs { if ("" + optional(f, "name", "")) == ("" + scheme) { return "" + scheme } }
+    for f in pairs {
+        if ("" + optional(f, "major", "")) == ("" + major) && ("" + optional(f, "minor", "")) == ("" + minor) { return "" + optional(f, "name", "") }
+    }
+    ""
+}
 fn open_detail(state){
     if state == "protected" { return "Quick Deck doesn't open password-protected files: OctoSense keeps passwords on its own sheets, and there isn't one for presentations." }
     if state == "held" { return "It holds video or audio, or parts larger or more unusual than the deck engine reads safely yet (#448). Remove the media, or save a smaller copy, in the app that made it, then open it again." }
-    if state == "unsupported" { return "Older PowerPoint (.ppt), Keynote (.key), OpenDocument (.odp) and PDF files can't be opened. Save it as .pptx in the app that made it." }
+    if state == "unsupported" { return "Word documents, Excel workbooks, older PowerPoint (.ppt), Keynote (.key), OpenDocument (.odp) and PDF files can't be opened here. Save the presentation as .pptx in the app that made it." }
     if state == "too_large" { return "It's beyond what the deck engine opens on this device." }
     if state == "full" { return "Close another deck's tab, then open this one again." }
     ""
@@ -1454,6 +1518,7 @@ fn new_tab(d){
         grid: nil grid_for: nil cell: [0, 0] alt_text: ""
         shape_cat: "" table_rows: 3 table_cols: 4 chart_type: "column"
         bg_kind: "theme" transition_ms: 700
+        color_scheme: "" font_scheme: "" footer: nil
         import: d.import}
 }
 fn open_deck(d){
@@ -1507,6 +1572,7 @@ fn took_open(t, v){
     t.layouts = optional(v, "layouts", [])
     t.sections = optional(v, "sections", [])
     t.theme = "" + optional(v, "theme", "")
+    took_design(t, v)
     t.rev = optional(v, "rev", 0)
     t.edited = optional(v, "edited", false)
     t.can_undo = optional(v, "can_undo", false)
@@ -1533,6 +1599,61 @@ fn took_open(t, v){
         t.fit = true
         refresh_doc()
         pump()
+    })
+}
+// The deck's design as the document has it (deck.open, deck.state): its
+// theme, colour set, font pair and footer. What the person picked and is on
+// its way gives way to it.
+fn took_design(t, v){
+    let theme = optional(v, "theme", nil)
+    if theme != nil { t.theme = "" + theme }
+    t.color_scheme = "" + optional(v, "color_scheme", "")
+    t.font_scheme = "" + optional(v, "font_scheme", "")
+    t.footer = optional(v, "footer", nil)
+    t.colors = ""
+    t.fonts = ""
+    t.footer_pending = {}
+    // deck.open's missing_fonts holds for the fonts the deck opened with.
+    let key = t.theme + "|" + t.font_scheme
+    if optional(t, "fonts_key", nil) == nil { t.fonts_key = key }
+    t.fonts_changed = key != t.fonts_key
+    if t.fonts_changed { ask_fonts() }
+}
+// The deck's fonts this device draws with similar ones: what deck.open said,
+// until the theme or the font pair changes; then those of the current pair's
+// families that deck.fonts doesn't list.
+fn missing_now(t){
+    if !optional(t, "fonts_changed", false) { return optional(t, "missing_fonts", []) }
+    let fams = optional(st, "fonts", [])
+    if fams.len() == 0 { return [] }
+    let th = theme_named("" + t.theme)
+    let major = "" + optional(th, "major", "")
+    let minor = "" + optional(th, "minor", "")
+    if st.themes != nil {
+        for f in optional(st.themes, "font_schemes", []) {
+            if ("" + optional(f, "name", "")) == ("" + optional(t, "font_scheme", "")) {
+                major = "" + optional(f, "major", major)
+                minor = "" + optional(f, "minor", minor)
+            }
+        }
+    }
+    let out = []
+    for name in [major, minor] { if name != "" && !has(fams, name) && !has(out, name) { out.push(name) } }
+    out
+}
+// After a design change, an undo or a redo: the deck's design again
+// (deck.state), so the Theme segment follows without reopening.
+fn refresh_state(t){
+    if t == nil || t.doc == nil { return }
+    engine("state", {doc: t.doc}, fn(a){
+        if !a.is_ok { return }
+        took_design(t, a.data)
+        let d = deck_by_path(t.path)
+        if d != nil && d.theme != t.theme {
+            d.theme = t.theme
+            remember(d)
+        }
+        if deck_tab() == t && t.editing == nil && t.seg == "theme" { render_inspector() }
     })
 }
 // The deck's slides, sections and size again (deck.slides).
@@ -1756,6 +1877,8 @@ fn detail_next(t){
             t.detail = a.data
             t.detail_for = id
             t.sel = keep_shapes(t, t.sel)
+            t.chart_pending = {}
+            t.tb_pending = {}
             // The notes field of this slide keeps its typing: it isn't drawn again.
             let typing = t.seg == "notes" && optional(t, "notes_for", nil) == id
             if t.pending_edit != nil {
@@ -1952,10 +2075,16 @@ fn undo(t, redo){
         took_change(t, a.data)
         t.layouts_asked = false
         t.layout_pics = {}
+        // What the inspector shows comes back from the document: the slide's
+        // shapes (deck.slide) and the box's format (deck.format_state) through
+        // the pump, the deck's design here (deck.state).
+        t.chart_pending = {}
+        t.tb_pending = {}
+        refresh_state(t)
         // An undo can add, remove or move slides and shapes.
         refresh_slides(t, || {
             t.sel = keep_shapes(t, t.sel)
-            refresh_doc()
+            refresh_view(t)
             pump()
         })
     })
@@ -2203,6 +2332,8 @@ fn canvas_double_tap(x, y){
 fn selection_changed(t){
     t.fmt = nil
     t.fmt_due = true
+    t.chart_pending = {}
+    t.tb_pending = {}
     t.paragraphs = nil
     t.grid = nil
     t.font_open = false
@@ -2703,7 +2834,8 @@ fn design(t, args, what){
         t.layouts_asked = false
         t.layout_pics = {}
         took_change(t, a.data)
-        refresh_doc()
+        refresh_view(t)
+        refresh_state(t)
     })
 }
 fn set_background(t, kind){
@@ -2720,12 +2852,28 @@ fn background_all(t){
     if t.bg_kind == "colour" { design(t, {background: {color: c[3] all: true}}, "change the backgrounds") return }
     design(t, {background: {gradient: {stops: [[0, c[6]], [1, c[1]]] angle: 90} all: true}}, "change the backgrounds")
 }
+// A footer setting: shown at once, the deck's own after deck.state answers.
+// Footer text shows the footer; an empty one hides it.
 fn footer(t, key, value){
+    let p = optional(t, "footer_pending", {})
     let f = {}
-    f[key] = value
-    if key == "slide_numbers" { t.slide_numbers = value }
-    if key == "date" { t.date = value }
-    if key == "footer_text" { t.footer_text = value }
+    if key == "slide_numbers" {
+        p.slide_numbers = value
+        f.slide_numbers = value
+    }
+    if key == "date" {
+        p.date = value
+        f.date = value
+    }
+    if key == "footer_text" {
+        let text = ("" + value).trim()
+        p.footer_text = text
+        p.footer = text != ""
+        f.footer_text = text
+        f.footer = text != ""
+    }
+    t.footer_pending = p
+    render_inspector()
     design(t, {footer: f}, "change the footer")
 }
 
@@ -3332,6 +3480,24 @@ fn render_present_bar(){ if st.present != nil { ui.present_bar.render() } }
 fn refresh_doc(){
     if st.screen == "home" { render_tabs() return }
     show()
+}
+// After a change that keeps the window's regions as they are (a design
+// change, an undo): the canvas, the thumbnails, the inspector's content and
+// the bars, drawn again without making their regions again, so the
+// inspector keeps its scroll and the control just used stays in view.
+fn refresh_view(t){
+    if deck_tab() != t || t.state != "ready" || t.view != "slides" {
+        refresh_doc()
+        return
+    }
+    render_canvas()
+    render_thumbs()
+    render_pill()
+    render_insp_tabs()
+    render_inspector()
+    render_bar()
+    render_tabs()
+    render_status()
 }
 // Which of the deck view's regions show.
 fn show_regions(){
@@ -4102,7 +4268,7 @@ fn divider(){ SolidView{width: Fill height: 1 draw_bg.color: qd_line_soft} }
 // One segment of a segmented row: an icon or a word, tinted when chosen.
 fn seg_item(on, ic, text, act){
     GestureView{width: Fill height: Fill cursor: MouseCursor.Hand on_tap: |x, y| act()
-        RoundedView{width: Fill height: Fill align: Align{x: 0.5 y: 0.5} show_bg: true
+        RoundedView{width: Fill height: Fill align: Align{x: 0.5 y: 0.5} show_bg: true selected: on
             draw_bg +: {color: pick(on, qd_tint, qd_field) border_size: 1.0 border_color: pick(on, qd_accent, qd_field) border_radius: 3.0}
             if ic != "" { Ico{width: 18 height: 18 draw_svg +: {svg: icon(ic) color: pick(on, qd_accent, qd_icon)}} }
             if ic == "" { Label{padding: 0 text: text draw_text +: {color: pick(on, qd_link, qd_ink2) text_style: theme.font_regular{font_size: 11.5}}} }
@@ -4349,29 +4515,27 @@ fn font_list(t, current){
     }
 }
 // Box: shrink to fit and vertical alignment.
+// Box: shrink to fit and vertical alignment, as the box draws them
+// (deck.format_state's autofit and anchor; a change shows at once through
+// apply_format, then format_state answers again).
 fn box_section(t){
-    let anchor = "" + optional(t, "box_anchor", "")
-    let shrink = optional(t, "box_shrink", nil)
+    let b = box_state(t.fmt)
     View{width: Fill height: Fit flow: Down padding: Inset{left: 16 right: 16 top: 12 bottom: 14} spacing: 8
         heading("Box")
-        toggle_row("Shrink text when it overflows", shrink == true, |on| {
-            let x = deck_tab()
-            x.box_shrink = on
-            apply_format(x, {autofit: pick(on, "shrink", "none")}, "change the box")
+        toggle_row("Shrink text when it overflows", b.shrink, |on| {
+            apply_format(deck_tab(), {autofit: pick(on, "shrink", "none")}, "change the box")
         })
         sublabel("Vertical alignment")
         SegRow{width: 216
-            seg_item(anchor == "top", "valign-top", "", || box_anchor("top"))
-            seg_item(anchor == "middle", "valign-middle", "", || box_anchor("middle"))
-            seg_item(anchor == "bottom", "valign-bottom", "", || box_anchor("bottom"))
+            seg_item(b.anchor == "top", "valign-top", "", || box_anchor("top"))
+            seg_item(b.anchor == "middle", "valign-middle", "", || box_anchor("middle"))
+            seg_item(b.anchor == "bottom", "valign-bottom", "", || box_anchor("bottom"))
         }
+        if b.autofit == "resize" { hint("The box grows to fit its text.") }
+        if b.anchor == "justified" || b.anchor == "distributed" { hint("Its text is spread over the box's height.") }
     }
 }
-fn box_anchor(a){
-    let t = deck_tab()
-    t.box_anchor = a
-    apply_format(t, {anchor: a}, "align the box's text")
-}
+fn box_anchor(a){ apply_format(deck_tab(), {anchor: a}, "align the box's text") }
 // Shape: fill, outline, shadow.
 fn shape_section(t, sh){
     let fill = hex_of(optional(sh, "fill", ""))
@@ -4475,15 +4639,20 @@ fn table_section(t, sh){
     let style = "" + optional(tb, "style", "")
     let r0 = min(t.cell[0], max(0, rows - 1))
     let c0 = min(t.cell[1], max(0, cols - 1))
+    let o = table_options(tb, optional(t, "tb_pending", {}))
     View{width: Fill height: Fit flow: Down padding: Inset{left: 16 right: 16 top: 12 bottom: 14} spacing: 8
         heading("Table")
         sublabel("Style")
         View{width: Fill height: Fit flow: Flow.Right{wrap: true} spacing: 6
             for s in TABLE_STYLES { chip(style == s.id, s.label, || table_op(deck_tab(), {op: "style" style: s.id}, "change the table's style")) }
         }
-        toggle_row("Header row", optional(tb, "header_row", optional(t, "tb_header", true)), |on| { let x = deck_tab() x.tb_header = on table_op(x, {op: "options" header_row: on}, "change the table") })
-        toggle_row("Banded rows", optional(tb, "banded_rows", optional(t, "tb_banded", true)), |on| { let x = deck_tab() x.tb_banded = on table_op(x, {op: "options" banded_rows: on}, "change the table") })
-        toggle_row("First column", optional(tb, "first_column", optional(t, "tb_first", false)), |on| { let x = deck_tab() x.tb_first = on table_op(x, {op: "options" first_column: on}, "change the table") })
+        sublabel("Options")
+        toggle_row("Header row", o.header_row, |on| table_option(deck_tab(), "header_row", on))
+        toggle_row("Total row", o.total_row, |on| table_option(deck_tab(), "total_row", on))
+        toggle_row("Banded rows", o.banded_rows, |on| table_option(deck_tab(), "banded_rows", on))
+        toggle_row("First column", o.first_column, |on| table_option(deck_tab(), "first_column", on))
+        toggle_row("Last column", o.last_column, |on| table_option(deck_tab(), "last_column", on))
+        toggle_row("Banded columns", o.banded_columns, |on| table_option(deck_tab(), "banded_columns", on))
         sublabel("Cells")
         RoundedView{width: Fill height: Fit flow: Down show_bg: true draw_bg +: {color: qd_field border_size: 1.0 border_color: qd_field_line border_radius: 4.0}
             for r in min(rows, 10) {
@@ -4519,6 +4688,38 @@ fn table_section(t, sh){
         }
     }
 }
+// A table option: shown at once, the table's own once deck.slide answers.
+fn table_option(t, key, on){
+    let p = optional(t, "tb_pending", {})
+    let args = {op: "options"}
+    if key == "header_row" {
+        p.header_row = on
+        args.header_row = on
+    }
+    if key == "total_row" {
+        p.total_row = on
+        args.total_row = on
+    }
+    if key == "banded_rows" {
+        p.banded_rows = on
+        args.banded_rows = on
+    }
+    if key == "first_column" {
+        p.first_column = on
+        args.first_column = on
+    }
+    if key == "last_column" {
+        p.last_column = on
+        args.last_column = on
+    }
+    if key == "banded_columns" {
+        p.banded_columns = on
+        args.banded_columns = on
+    }
+    t.tb_pending = p
+    render_inspector()
+    table_op(t, args, "change the table")
+}
 // A table cell's field: its text goes in when the person presses Return or
 // pauses; choosing it makes it the row and column the buttons act on.
 fn cell_field(t, r, c, text, on){
@@ -4537,14 +4738,8 @@ fn chart_section(t, sh){
     let ch = optional(sh, "chart", {})
     let kind = chart_id(optional(ch, "type", "column"))
     let g = chart_grid(t)
-    let flags = optional(t, "chart_flags", {})
-    let title_on = optional(flags, "title", ("" + optional(ch, "title", "")) != "")
-    // The engine's defaults (model/src/chart.rs): a legend below, gridlines,
-    // no data labels; a key the service reports, even null, says otherwise.
-    let legend_on = optional(flags, "legend", pick(has_key(ch, "legend"), optional(ch, "legend", nil) != nil, true))
-    let labels_on = optional(flags, "data_labels", pick(has_key(ch, "data_labels"), optional(ch, "data_labels", false) == true, false))
-    let grid_on = optional(flags, "gridlines", pick(has_key(ch, "gridlines"), optional(ch, "gridlines", false) == true, true))
-    let palette = "" + optional(flags, "palette", optional(ch, "palette", "colorful1"))
+    // What deck.slide reports of the chart, or a change on its way.
+    let cs = chart_state(ch, optional(t, "chart_pending", {}))
     let c = swatches_for(t)
     View{width: Fill height: Fit flow: Down padding: Inset{left: 16 right: 16 top: 12 bottom: 14} spacing: 8
         heading("Chart")
@@ -4567,40 +4762,56 @@ fn chart_section(t, sh){
         }
         divider()
         heading("Elements")
-        toggle_row("Title", title_on, |on| chart_flag(deck_tab(), "title", on))
-        toggle_row("Legend", legend_on, |on| chart_flag(deck_tab(), "legend", on))
-        toggle_row("Data labels", labels_on, |on| chart_flag(deck_tab(), "data_labels", on))
-        toggle_row("Gridlines", grid_on, |on| chart_flag(deck_tab(), "gridlines", on))
+        toggle_row("Title", cs.title, |on| chart_flag(deck_tab(), "title", on))
+        toggle_row("Legend", cs.legend, |on| chart_flag(deck_tab(), "legend", on))
+        toggle_row("Data labels", cs.data_labels, |on| chart_flag(deck_tab(), "data_labels", on))
+        toggle_row("Gridlines", cs.gridlines, |on| chart_flag(deck_tab(), "gridlines", on))
         divider()
         heading("Colours")
         View{width: Fill height: Fit flow: Right spacing: 8
-            palette_chip(palette.search("mono") < 0, [c[1], c[2], c[3], c[4]], || chart_flag(deck_tab(), "palette", "colorful1"))
-            palette_chip(palette.search("mono") >= 0, [c[1], c[1], c[1], c[1]], || chart_flag(deck_tab(), "palette", "monochrome1"))
+            palette_chip(!cs.mono, [c[1], c[2], c[3], c[4]], || chart_flag(deck_tab(), "palette", "colorful1"))
+            palette_chip(cs.mono, [c[1], c[1], c[1], c[1]], || chart_flag(deck_tab(), "palette", "monochrome1"))
         }
     }
 }
 fn palette_chip(on, colours, act){
     GestureView{width: 74 height: 30 cursor: MouseCursor.Hand on_tap: |x, y| act()
-        RoundedView{width: Fill height: Fill flow: Right align: Align{x: 0.5 y: 0.5} padding: 4 spacing: 0 show_bg: true
+        RoundedView{width: Fill height: Fill flow: Right align: Align{x: 0.5 y: 0.5} padding: 4 spacing: 0 show_bg: true selected: on
             draw_bg +: {color: qd_field border_size: pick(on, 2.0, 1.0) border_color: pick(on, qd_accent, qd_field_line) border_radius: 5.0}
             for i hex in colours { RoundedView{width: 16 height: 18 show_bg: true draw_bg +: {color: mix(hex_color(hex, #x888888), #xffffff, i * 0.18) border_radius: 1.0}} }
         }
     }
 }
+// A chart element or palette: shown at once, the chart's own once deck.slide
+// answers. An empty title takes the title away (SERVICE.md deck.chart).
 fn chart_flag(t, key, value){
-    let flags = optional(t, "chart_flags", {})
-    flags[key] = value
-    t.chart_flags = flags
+    let sh = selected_shape(t)
+    if sh == nil { return }
+    let p = optional(t, "chart_pending", {})
     let args = {}
     if key == "title" {
-        let sh = selected_shape(t)
         let ch = optional(sh, "chart", {})
-        args.title = pick(value, pick(("" + optional(ch, "title", "")) == "", "Chart Title", "" + optional(ch, "title", "")), nil)
-    } else if key == "legend" {
-        args.legend = pick(value, "b", "none")
-    } else {
-        args[key] = value
+        let had = "" + optional(ch, "title", "")
+        p.title = value
+        args.title = pick(value, pick(had == "", "Chart Title", had), "")
     }
+    if key == "legend" {
+        p.legend = pick(value, "b", "none")
+        args.legend = p.legend
+    }
+    if key == "data_labels" {
+        p.data_labels = value
+        args.data_labels = value
+    }
+    if key == "gridlines" {
+        p.gridlines = value
+        args.gridlines = value
+    }
+    if key == "palette" {
+        p.palette = value
+        args.palette = value
+    }
+    t.chart_pending = p
     render_inspector()
     chart_op(t, args, "change the chart")
 }
@@ -4754,6 +4965,9 @@ fn theme_panel(t){
         fonts = optional(st.themes, "font_schemes", [])
     }
     let wide = t.size[0] / max(1, t.size[1]) > 1.5
+    // The deck's footer (deck.open, deck.state), or a change on its way.
+    let fs = footer_state(t.footer, optional(t, "footer_pending", {}))
+    let missing = missing_now(t)
     View{width: Fill height: Fit flow: Down
         View{width: Fill height: Fit flow: Down padding: Inset{left: 16 right: 16 top: 12 bottom: 14} spacing: 8
             heading("Themes")
@@ -4768,12 +4982,14 @@ fn theme_panel(t){
             View{width: Fill height: Fit flow: Flow.Right{wrap: true} spacing: 6
                 for sc in schemes { scheme_card(t, sc) }
             }
+            if schemes.len() > 0 && !scheme_listed(schemes, current_colors(t)) { hint("This deck's own colours: " + current_colors(t) + ". Pick a set to use one of these instead.") }
         }
         divider()
         View{width: Fill height: Fit flow: Down padding: Inset{left: 16 right: 16 top: 16 bottom: 18} spacing: 6
             heading("Fonts")
-            if optional(t, "missing_fonts", []).len() > 0 { hint("Drawn with similar fonts on this device: " + list_text(t.missing_fonts) + ".") }
+            if missing.len() > 0 { hint("Drawn with similar fonts on this device: " + list_text(missing) + ".") }
             for f in fonts { font_row(t, f) }
+            if fonts.len() > 0 && current_fonts(t) == "" && ("" + optional(t, "font_scheme", "")) != "" { hint("This deck's own fonts: " + t.font_scheme + ".") }
         }
         divider()
         View{width: Fill height: Fit flow: Right padding: Inset{left: 16 right: 16 top: 16 bottom: 24} spacing: 16
@@ -4786,9 +5002,9 @@ fn theme_panel(t){
             }
             View{width: Fill height: Fit flow: Down spacing: 4
                 heading("Footer")
-                toggle_row("Slide numbers", optional(t, "slide_numbers", false), |on| footer(deck_tab(), "slide_numbers", on))
-                toggle_row("Date", optional(t, "date", false), |on| footer(deck_tab(), "date", on))
-                Field{height: 32 text: optional(t, "footer_text", "") empty_text: "Footer text"
+                toggle_row("Slide numbers", fs.slide_numbers, |on| footer(deck_tab(), "slide_numbers", on))
+                toggle_row("Date", fs.date, |on| footer(deck_tab(), "date", on))
+                Field{height: 32 text: fs.footer_text empty_text: "Footer text"
                     on_return: |text| { let x = deck_tab() footer(x, "footer_text", text) }}
             }
         }
@@ -4802,7 +5018,7 @@ fn theme_card(th, on, w, h, act){
     let ink = hex_color(slot(c, 2, "#1e2b3c"), #x1e2b3c)
     let rule = hex_color(slot(c, 4, "#2e6fd8"), #x2e6fd8)
     GestureView{width: w + 4 height: Fit flow: Down align: Align{x: 0.5} spacing: 5 cursor: MouseCursor.Hand on_tap: |x, y| act()
-        RoundedView{width: w + 4 height: h + 4 padding: 2 flow: Overlay show_bg: true
+        RoundedView{width: w + 4 height: h + 4 padding: 2 flow: Overlay show_bg: true selected: on
             draw_bg +: {color: #x00000000 border_size: pick(on, 2.0, 0.0) border_color: qd_accent border_radius: 6.0}
             RoundedView{width: w height: h flow: Down align: Align{x: 0.5 y: 0.5} spacing: 3 show_bg: true
                 draw_bg +: {color: ground border_size: 1.0 border_color: qd_thumb_line border_radius: 4.0}
@@ -4820,9 +5036,9 @@ fn theme_card(th, on, w, h, act){
         Label{padding: 0 text: theme_label(th.name) draw_text +: {color: pick(on, qd_link, qd_ink2) text_style: theme.font_regular{font_size: 11.5}}}
     }
 }
-// A colour variant: its dark 2 and accents 1-4 as dots, its name below. The
-// contract names the schemes; their colours come with the themes of the same
-// name (SERVICE.md's deck.themes lists the others' names only).
+// A colour set: its dark 2 and accents 1-4 as dots, its name below
+// (deck.themes gives each set's twelve colours; an older service gave names
+// only, and then a set shows its theme's colours, or its name alone).
 fn scheme_colors(sc){
     let c = optional(sc, "colors", nil)
     if c != nil { return c }
@@ -4833,33 +5049,22 @@ fn scheme_name(sc){
     if n != nil { return "" + n }
     "" + sc
 }
-// The deck's colours and fonts: what the person chose here, else the
-// theme's own (deck.open names neither: a theme's colours are the scheme of
-// its name, its fonts the pair with its major and minor families).
-fn current_colors(t){
-    let chosen = "" + optional(t, "colors", "")
-    if chosen != "" { return chosen }
-    "" + t.theme
-}
+// The deck's colour set and font pair (deck.open, deck.state), or one just
+// picked and on its way.
+fn current_colors(t){ scheme_mark(optional(t, "colors", ""), optional(t, "color_scheme", ""), t.theme) }
 fn current_fonts(t){
-    let chosen = "" + optional(t, "fonts", "")
-    if chosen != "" { return chosen }
     let th = theme_named("" + t.theme)
-    if th == nil || st.themes == nil { return "" }
-    for f in optional(st.themes, "font_schemes", []) {
-        if ("" + optional(f, "major", "")) == ("" + optional(th, "major", "-")) && ("" + optional(f, "minor", "")) == ("" + optional(th, "minor", "-")) { return "" + optional(f, "name", "") }
-    }
-    ""
+    let pairs = []
+    if st.themes != nil { pairs = optional(st.themes, "font_schemes", []) }
+    font_mark(optional(t, "fonts", ""), optional(t, "font_scheme", ""), pairs, optional(th, "major", ""), optional(th, "minor", ""))
 }
 fn scheme_card(t, sc){
     let name = scheme_name(sc)
     let c = scheme_colors(sc)
     let on = current_colors(t) == name
     GestureView{width: floor((INSP_W - 32 - 12) / 3) height: 50 cursor: MouseCursor.Hand on_tap: |x, y| { let x2 = deck_tab() x2.colors = name design(x2, {colors: name}, "change the colours") }
-        RoundedView{width: Fill height: Fill flow: Down align: Align{x: 0.5 y: 0.5} spacing: 5 show_bg: true
+        RoundedView{width: Fill height: Fill flow: Down align: Align{x: 0.5 y: 0.5} spacing: 5 show_bg: true selected: on
             draw_bg +: {color: qd_field border_size: pick(on, 2.0, 1.0) border_color: pick(on, qd_accent, qd_field_line) border_radius: 5.0}
-            // deck.themes names a scheme's colours only through the theme of its
-            // name: the others show their name alone.
             if c.len() >= 9 {
                 View{width: Fit height: Fit flow: Right spacing: 4
                     for i in [2, 4, 5, 6, 7] { RoundedView{width: 13 height: 13 show_bg: true draw_bg +: {color: hex_color("" + c[i], #x888888) border_radius: 6.5}} }
@@ -4868,6 +5073,10 @@ fn scheme_card(t, sc){
             Label{padding: 0 text: theme_label(name) draw_text +: {color: pick(on, qd_link, qd_ink2) text_style: theme.font_regular{font_size: 10.5}}}
         }
     }
+}
+fn scheme_listed(schemes, name){
+    for sc in schemes { if scheme_name(sc) == name { return true } }
+    false
 }
 fn list_text(items){
     let out = ""
@@ -4879,9 +5088,9 @@ fn font_row(t, f){
     let name = "" + optional(f, "name", "")
     let on = current_fonts(t) == name
     GestureView{width: Fill height: 38 cursor: MouseCursor.Hand on_tap: |x, y| { let x2 = deck_tab() x2.fonts = name design(x2, {fonts: name}, "change the fonts") }
-        RoundedView{width: Fill height: Fill flow: Right align: Align{y: 0.5} padding: Inset{left: 12 right: 10} spacing: 8 show_bg: true
+        RoundedView{width: Fill height: Fill flow: Right align: Align{y: 0.5} padding: Inset{left: 12 right: 10} spacing: 8 show_bg: true selected: on
             draw_bg +: {color: qd_field border_size: pick(on, 2.0, 1.0) border_color: pick(on, qd_accent, qd_field_line) border_radius: 5.0}
-            Label{padding: 0 width: 118 text: name draw_text +: {color: pick(on, qd_link, qd_ink) text_style: theme.font_regular{font_size: 12.5}}}
+            Label{padding: 0 width: 118 max_lines: 1 text_overflow: TextOverflow.Ellipsis text: name draw_text +: {color: pick(on, qd_link, qd_ink) text_style: theme.font_regular{font_size: 12.5}}}
             Label{padding: 0 width: Fill max_lines: 1 text_overflow: TextOverflow.Ellipsis text: "" + optional(f, "major", "") + " / " + optional(f, "minor", "") draw_text +: {color: qd_muted text_style: theme.font_regular{font_size: 11}}}
             if on { Ico{width: 16 height: 16 draw_svg +: {svg: icon("check") color: qd_link}} }
         }

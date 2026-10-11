@@ -1867,7 +1867,7 @@
   {
    "id": "box",
    "role": "Format · Box: shrink text when it overflows, vertical alignment",
-   "widget": "box_section: toggle_row 'Shrink text when it overflows' (QdToggle → deck.format autofit shrink/none); SegRow (216 wide) of seg_items valign-top/middle/bottom → deck.format anchor",
+   "widget": "box_section: toggle_row 'Shrink text when it overflows' (QdToggle → deck.format autofit shrink/none; on when deck.format_state says autofit shrink); SegRow (216 wide) of seg_items valign-top/middle/bottom → deck.format anchor (the one deck.format_state's anchor names is chosen; each segment says so through View.selected); a hint for a box that grows (autofit resize) or spreads its text (anchor justified, distributed)",
    "cite": [
     "makepad widgets/src/view_ui.rs:805 (ScrollYView); a view keeps its scroll position across its own render(): view.rs:296-306",
     "makepad widgets/src/view_ui.rs:5 (View); flow: Overlay children placed by margin from the parent's origin (draw/src/turtle.rs)",
@@ -1923,7 +1923,7 @@
    "font": "theme.font_regular",
    "size": 11.5,
    "decision": null,
-   "notes": "Contract gap: deck.format_state reports no autofit or anchor, so the box's settings show off until the person sets them.",
+   "notes": "deck.format_state reports the box's anchor and autofit as the box draws them (SERVICE.md 'Inspector states (#507)'); a change shows at once and format_state's next answer confirms it, and after Undo or Redo the box's own come back.",
    "image_rect": [
     1194,
     574,
