@@ -130,11 +130,36 @@ Caps: at most 512 pages named in one call.
 | Method | Arguments | Answer |
 | --- | --- | --- |
 | `pdf.edit_text` | `{doc, page, paragraph?, line?, text, align?, color?}` | `{edited: true}`; exactly one of `paragraph` or `line`, numbers from `pdf.lines` |
+| `pdf.edit_check` | `{doc, page, paragraph?, line?, text, align?, color?}`, as `pdf.edit_text` | `{keeps_font, font, box, covers, off_page}`: what that edit would do, without making it |
 
 `align` (`left`, `center`, `right` or `justify`) and `color` (`#rrggbb`) format
-a paragraph and are refused with `line`; the paragraph keeps its font, size
-and place. Without `align` its lines are set flush left, and without `color`
-it keeps its own; `pdf.lines` reports neither.
+a paragraph and are refused with `line`. The paragraph keeps its size and
+place, and its own font when that font can show the new text; otherwise the
+engine draws it in a stand-in (Helvetica, Times or Courier, bold or italic to
+match), which `pdf.edit_check` reports before the edit. Without `align` its
+lines are set flush left, and without `color` it keeps its own; `pdf.lines`
+reports neither.
+
+`pdf.edit_check` makes the edit on a copy of the open document (its unsaved
+edits included) with the engine's own editor, and drops the copy, so nothing
+changes:
+
+- `keeps_font`: whether the new text is drawn in the paragraph's (or line's)
+  own font.
+- `font`: the font it would be drawn in: its own name (`""` when the PDF
+  names none, as `pdf.lines` says) or the stand-in.
+- `box`: where the edited text would be, `[x, y, w, h]`; `null` when none
+  would show.
+- `covers`: how many other lines of text on the page it would run into that
+  the paragraph does not touch now.
+- `off_page`: whether part of it would fall outside the page.
+
+It refuses as `pdf.edit_text` would, in the same words. Both refuse an edit
+the engine will not make with `invalid:` and words for a person: text no font
+the engine has can show ("PDF Tools can't edit Chinese, Japanese or Korean
+text yet.", other characters named); a document that opens for reading only,
+or whose security settings forbid changes; a paragraph or line number that is
+no longer on the page.
 
 ## History and saving
 
