@@ -77,6 +77,8 @@ mod maps_model_tests;
 #[cfg(test)]
 mod pdftools_model_tests;
 #[cfg(test)]
+mod quickdeck_model_tests;
+#[cfg(test)]
 mod system_app_theme_tests;
 #[cfg(test)]
 mod writer_model_tests;
