@@ -8,8 +8,7 @@ OctoSense 中有四处用到 WebAssembly。其中一处专为运行应用自己�
 一个无法编译的浏览器构建。本页逐一说明：运行的是谁的模块、它能接触什么、哪些构建包含它、
 如何检查过。本页描述当前源码。桌面版 0.1.0-rc.2 和 Home 0.1.0-beta.2 包含 ADR 0011 核心模块。
 ADR 0014 共享组件及下文的新声明策略已在 macOS 和 OnePlus 6 上通过最终源码 `8b09e05d`
-的验收。桌面发布 tag `desktop-v0.1.0-rc.4` 指向 `9266b008`；
-该[桌面 RC4 预发布版](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.4)已发布，实际安装包、签名及验收范围见[归档包证据](../tools/fixtures/wasm-phone-lab/README.zh-CN.md#rc4-发布证据)。
+的验收。[桌面 RC5](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.5)（源码 `83d356c2`，2026 年 10 月 11 日）是第一个组件 HTTPS 请求能正常工作的发布版本（[#471](https://github.com/OctoSense-org/OctoSense/pull/471)：RC4 在处理第一次 `wasi:http` 请求、选择 TLS provider 时会 panic），也是第一个提供原生图表的版本，应用可通过 `charts.d3@1` 声明必须使用原生图表（见[图表](charts.zh-CN.md)）。在该版本上，[Repo Radar](https://github.com/ymote/octosense-repo-radar) 成为第一个从官方公开目录安装的组件应用：其[公开商店验收](https://github.com/ymote/octosense-repo-radar/blob/main/review/acceptance-public-store-0.1.2.json)通过了 93 项原生检查，覆盖组件发出的真实 GitHub 请求、原生图表，以及重启后仍保留的组件自有状态。[桌面 RC6](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.6) 保留这一切，并新增套接字。[桌面 RC4](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.4)（`9266b008`）带来了组件运行时；其实际安装包、签名及验收范围见[归档包证据](../tools/fixtures/wasm-phone-lab/README.zh-CN.md#rc4-发布证据)。
 独立手机测试没有更新已安装的 Home。
 源码、测试与发行状态分别记录。
 参见[应用能力与执行边界](capabilities.zh-CN.md)。
@@ -50,7 +49,7 @@ ADR 0014 共享组件及下文的新声明策略已在 macOS 和 OnePlus 6 上�
 
 ### 组件
 
-[ADR 0014](adr/0014-app-components-in-webassembly.zh-CN.md)（已接受；桌面实现随 RC4 发布）增加了第二种
+[ADR 0014](adr/0014-app-components-in-webassembly.zh-CN.md)（已接受；桌面实现随 RC4 发布，组件 HTTPS 自 RC5 起可用）增加了第二种
 `fns/<name>.wasm`：WebAssembly 组件，用 `cargo build --target wasm32-wasip2` 从普通的
 Rust crate 构建。服务按文件头区分两者，一个应用包可以同时携带两种。
 
