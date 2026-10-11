@@ -132,9 +132,10 @@ fn an_endless_loop_stops_at_its_deadline_and_spends_the_instance() {
     let started = Instant::now();
     assert_eq!(guest.call("spin", b""), Err(CallError::Deadline));
     let took = started.elapsed();
-    // The deadline is 200 ms of wall-clock time, give or take a tick.
+    // The deadline is 200 ms of wall-clock time: the call is never stopped
+    // before it, and is stopped a tick or so after it.
     assert!(
-        took >= Duration::from_millis(190) && took < Duration::from_millis(400),
+        took >= limits().deadline && took < Duration::from_millis(400),
         "stopped after {took:?}"
     );
     // Its state may be half-updated: it takes no more calls, and a fresh
