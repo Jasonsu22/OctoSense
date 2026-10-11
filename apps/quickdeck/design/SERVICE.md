@@ -307,29 +307,46 @@ notes at most 20,000 characters.
   megapixels in all. A call over a cap answers `too_large:` before anything
   is written.
 
-## Open questions for the coordinator
+## Decisions (coordinator, 11 Oct 2026)
 
-1. **Shape of the API.** Should the editing methods be grouped by `op`, as
-   `pdf.pages` and `pdf.comment` are, or be one method per action?
-2. **The gate's count.** `Door::admit_all` takes at most 64 commands. A table
-   fill can need up to 5,625 `text.set` commands. Should the app methods
-   admit in chunks, or does the door take a separate count for the service's
-   own methods?
-3. **Undo folding.** The draft edits the engine's public `History`. Is that
-   acceptable, or should deckcraft gain a grouping API upstream (a
-   `ymote/deckcraft` PR and a repin)?
-4. **The import guard.** Should it be the service's zip check and its media
-   refusal, or should opening decks from this device wait for deckcraft to
-   bound media and zip reads itself (#448)?
-5. **Present.** Is adding `deckcraft-anim` acceptable, or should the service
-   compute build steps from the slides' animation lists itself?
-6. **The cache budget.** Should it be shared with the pdf service's numbers
-   (16 MiB, 64 files, 32 covers)? Quick Deck's storage also holds its
-   library, images and exports.
-7. **Fonts.** Should `deck.fonts` list only what the engine finds (system
-   fonts plus its last-resort face), or should the desktop build embed
-   craft-fonts (`CRAFT_FONTS_DIR`)? This is BRIEF open question 4.
-8. **Tests.** The pdf service's model: hostile fixtures for every reviewed
-   read, `held:` and the import guard, a test that undo folds to one step per
-   call, and a test that renders after a save and a reopen. Engine crate tests
-   still aren't in CI (#412).
+The maintainer approved the ten designs on 11 Oct 2026. The open questions of
+the draft are settled as follows; both the service and the app build to this
+file, and neither changes it without the coordinator.
+
+1. **Shape of the API: grouped by `op`**, as `pdf.pages` and `pdf.comment`
+   are, wherever several actions act on the same target (slides, an object's
+   insert kinds, formatting); one method per distinct concern otherwise.
+2. **The gate's count: a count of the method's own.** App methods build their
+   engine commands from reviewed values; each method declares the most
+   commands one call may make, with its reason beside it (a table fill sets
+   at most 1,024 cells a call; the app fills a larger table over several
+   calls). Every command still passes the door's allowlist and its `Limit`s;
+   chunking a call to dodge a cap is not allowed.
+3. **Undo folding: the engine's public `History`, now.** One call is one undo
+   step, proven by a test. A grouping API in deckcraft is a follow-up, not a
+   blocker.
+4. **The import guard: the service's own, before the engine sees a byte.**
+   "Open a presentation from this device" goes through it: the zip's central
+   directory read with bounds (entries, names, declared and actual sizes,
+   compression ratio, nesting), embedded audio and video refused, and any
+   refusal answered as `damaged:` or `invalid:` with plain words. Hostile
+   fixtures (a zip bomb, a lying declared size, ten thousand entries, media)
+   prove each refusal happens before the engine runs. Engine-side bounds stay
+   tracked in #448.
+5. **Present: `deckcraft-anim`, at the same pinned revision** (one revision
+   per dependency). Build steps show their end states; nothing animates.
+6. **The cache budget: PDF Tools' numbers** (16 MiB and 64 files, at most 32
+   covers, page renders evicted first, the whole cache cleared before
+   `storage_full:`). Quick Deck's storage is its own 64 MiB jail.
+7. **Fonts: no bundling** (the maintainer decided for PDF Tools on 11 Oct
+   2026, and it holds here). `deck.fonts` lists what the engine finds:
+   system fonts and its last-resort face; themes fall back.
+8. **Tests: the pdf service's standard.** Hostile fixtures for every reviewed
+   read, `held:` and the import guard; one undo step per call; a render after
+   a save and a reopen; a timing test (ignored by default). Engine crate
+   tests are not in CI (#412), so they run by hand on every change.
+
+Also settled: **Draft with AI** (BRIEF open question 2) is in, through the
+host's `model.complete` with the person's own provider; the app never sees a
+key and works without a provider. Quick Deck's manifest asks for a
+1536 x 1024 window (`"schema_minor": 1`), as PDF Tools does.
