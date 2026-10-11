@@ -368,6 +368,31 @@ fn rail_lit(id, mode, panel, open){
     if mode == "pages" { return id == "pages" }
     open && panel == id
 }
+// Read mode (the user: "there is no full screen read mode?"): which of the
+// document's regions show. In Read mode, the pages alone with the floating
+// bar, and the corner control that leaves it; the window stays the window,
+// since no app can make it full screen.
+fn chrome_for(reading){
+    {tabs: !reading modebar: !reading rail: !reading panels: !reading right: !reading toolrow: !reading status: !reading exit: reading}
+}
+// The canvas a document's pages get, in points: the window less the rail,
+// the left panel (`left`, with its line; 0 when folded), the right panel
+// (`right`, likewise), the tab row, the mode bar and the status line; in
+// Read mode, the whole window.
+fn canvas_size(width, height, reading, left, right){
+    if reading { return [max(240, width), max(240, height)] }
+    [max(240, width - RAIL_W - 1 - left - right), max(240, height - TAB_H - MODE_H - STATUS_H - 2)]
+}
+// The zoom a document takes when its canvas changes (entering or leaving
+// Read mode): a fitted zoom fits the new canvas (`fit_w` and `fit_p` are the
+// fits there), the automatic one is worked out again (`start`), and a zoom
+// the person chose stays.
+fn kept_zoom(zoom, zoom_auto, fit, fit_w, fit_p, start){
+    if fit == "width" { return clamp(floor(fit_w * 100) / 100, 0.25, 4.0) }
+    if fit == "page" { return clamp(floor(fit_p * 100) / 100, 0.25, 4.0) }
+    if zoom_auto { return start }
+    zoom
+}
 // A text colour's name in the Edit panel: "Its own colour" until one is chosen.
 fn colour_name(hex){
     if hex == nil { return "Its own colour" }
@@ -396,6 +421,8 @@ let pt_head = if ui_light { #xffffff } else { #x1f262b }
 let pt_desk = if ui_light { #xeceded } else { #x191f24 }
 let pt_status = if ui_light { #xffffff } else { #x1b2226 }
 let pt_pill = if ui_light { #xffffff } else { #x282d32 }
+// Read mode's corner control: the bar's colour, a little see-through.
+let pt_corner = if ui_light { #xffffffd0 } else { #x282d32d0 }
 let pt_card = if ui_light { #xffffff } else { #x232a2e }
 let pt_card_top = if ui_light { #xf7f8f9 } else { #x1e252a }
 let pt_home = if ui_light { #xf7f8f9 } else { #x191f24 }
@@ -988,7 +1015,7 @@ fn new_tab(d){
         mode: "read" panel: "pages" panel_kept: "pages" zoom: 1.0 fit: "" zoom_auto: true
         anchor: 1 page: 1
         renders: {} failed: {} thumbs: {} thumb_failed: {} grid: {} grid_failed: {} tile: 1.0
-        find: nil finding: false find_from: nil
+        find: nil finding: false find_from: nil reading: false
         comments: nil comments_state: "" thread: nil tool: "highlight" color: "yellow" reply: "" status_menu: false head_menu: false pending: nil
         fields: nil fields_state: "" field: nil field_text: "" field_on: false show_fields: true place: nil place_text: ""
         selected: [] drag: nil inserting: false
@@ -1191,16 +1218,19 @@ fn narrow(){ st.width < 1180 }
 // A window too short for the Edit panel's measured gaps (the shell's default
 // 603 points): the panel draws them tighter, so Apply stays in view.
 fn short(){ st.height < 760 }
-fn canvas_w(){
+fn canvas_box(){
     let t = cur_tab()
-    let w = st.width - RAIL_W - 1
-    if t != nil {
-        if left_open(t) { w = w - panel_w(t) - 1 }
-        if right_open(t) { w = w - right_w(t) - 1 }
+    let reading = reading_on(t)
+    let left = 0
+    let right = 0
+    if t != nil && !reading {
+        if left_open(t) { left = panel_w(t) + 1 }
+        if right_open(t) { right = right_w(t) + 1 }
     }
-    max(240, w)
+    canvas_size(st.width, st.height, reading, left, right)
 }
-fn canvas_h(){ max(240, st.height - TAB_H - MODE_H - STATUS_H - 2) }
+fn canvas_w(){ canvas_box()[0] }
+fn canvas_h(){ canvas_box()[1] }
 fn fit_width_zoom(t){
     let s = page_pt(t, t.page)
     (canvas_w() - 48) / s[0]
@@ -1241,6 +1271,32 @@ fn zoom_text(t){ "" + round(pick(t.mode == "pages", t.tile, t.zoom) * 100) + "%"
 fn refit(t){
     if t.fit == "width" { t.zoom = clamp(floor(fit_width_zoom(t) * 100) / 100, 0.25, 4.0) }
     if t.fit == "page" { t.zoom = clamp(floor(fit_page_zoom(t) * 100) / 100, 0.25, 4.0) }
+}
+
+// ---- Read mode ----------------------------------------------------------------
+
+// Whether tab `t` shows its pages alone (its PDF open and ready).
+fn reading_on(t){ t != nil && optional(t, "reading", false) && t.state == "ready" }
+// From the floating bar's full-screen button: the same page, and the zoom
+// the person chose, or the fit, worked out for the whole window (kept_zoom).
+fn enter_reading(t){
+    if t == nil || t.state != "ready" || t.mode == "pages" || t.mode == "combine" { return }
+    t.reading = true
+    reading_zoom(t)
+    show()
+    go_page(t, t.page)
+}
+// From the bar's Exit read mode or the corner control (a script gets no key
+// events, so there is no Esc): the page and zoom it left Read mode with.
+fn leave_reading(t){
+    if t == nil || !optional(t, "reading", false) { return }
+    t.reading = false
+    reading_zoom(t)
+    show()
+    go_page(t, t.page)
+}
+fn reading_zoom(t){
+    t.zoom = kept_zoom(t.zoom, t.zoom_auto, t.fit, fit_width_zoom(t), fit_page_zoom(t), start_zoom(t))
 }
 
 // ---- the render pump: one engine render at a time ---------------------------
@@ -1569,12 +1625,15 @@ fn save(t, then){
 fn page_tap(t, p, x, y){
     t.page = p
     render_pill()
+    // Read mode reads: a tap marks, fills or edits nothing.
+    if reading_on(t) { return }
     if t.mode == "comment" { comment_tap(t, p, x, y, false) return }
     if t.mode == "fill" { fill_tap(t, p, x, y) return }
     if t.mode == "edit" { edit_tap(t, p, x, y) return }
     render_panel()
 }
 fn page_double_tap(t, p, x, y){
+    if reading_on(t) { return }
     if t.mode == "comment" { comment_tap(t, p, x, y, true) }
 }
 fn inside(r, x, y){ x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3] }
@@ -2302,20 +2361,27 @@ fn refresh_doc(){
 fn show(){
     let t = cur_tab()
     let doc = t != nil
+    let c = chrome_for(reading_on(t))
     ui.home.set_visible(!doc)
     ui.doc.set_visible(doc)
+    ui.tabs_box.set_visible(c.tabs)
+    ui.status_box.set_visible(c.status)
+    ui.read_exit_box.set_visible(c.exit)
     if doc {
         let ready = t.state == "ready"
-        ui.panel_narrow.set_visible(ready && left_open(t) && t.panel == "pages")
-        ui.panel_wide.set_visible(ready && left_open(t) && t.panel != "pages")
-        ui.line_left.set_visible(ready && left_open(t))
+        ui.modebar_box.set_visible(c.modebar)
+        ui.rail_box.set_visible(c.rail)
+        ui.toolrow_box.set_visible(c.toolrow)
+        ui.panel_narrow.set_visible(ready && c.panels && left_open(t) && t.panel == "pages")
+        ui.panel_wide.set_visible(ready && c.panels && left_open(t) && t.panel != "pages")
+        ui.line_left.set_visible(ready && c.panels && left_open(t))
         ui.thumbs.set_visible(t.panel == "pages")
         ui.outline_box.set_visible(t.panel == "outline")
         ui.notes_box.set_visible(t.panel == "comments")
         ui.results_box.set_visible(t.panel == "search")
-        ui.right_thread_box.set_visible(ready && t.mode == "comment")
-        ui.right_side_box.set_visible(ready && (t.mode == "fill" || t.mode == "edit"))
-        ui.line_right.set_visible(ready && right_open(t))
+        ui.right_thread_box.set_visible(ready && c.right && t.mode == "comment")
+        ui.right_side_box.set_visible(ready && c.right && (t.mode == "fill" || t.mode == "edit"))
+        ui.line_right.set_visible(ready && c.right && right_open(t))
         ui.canvas.set_visible(ready && t.mode != "pages" && t.mode != "combine")
         ui.grid_box.set_visible(ready && t.mode == "pages")
         ui.combine_box.set_visible(ready && t.mode == "combine")
@@ -2331,6 +2397,7 @@ fn show(){
         if ready && t.mode == "combine" { render_combine() }
         if ready && t.mode != "pages" && t.mode != "combine" { render_canvas() }
         render_pill()
+        if c.exit { ui.read_exit.render() }
     } else {
         ui.home_pane.render()
     }
@@ -2845,6 +2912,7 @@ fn canvas_view(){
 fn page_view(t, p){
     let box = page_box(t, p)
     let k = t.zoom
+    let rd = reading_on(t)
     let src = page_src(t, p)
     let failed = optional(t.failed, "p" + p, nil) != nil && src == nil
     RectShadowView{width: box[0] height: box[1] flow: Overlay
@@ -2857,12 +2925,13 @@ fn page_view(t, p){
             }
         }
         if t.find != nil { for i in page_matches(t, p) { for r in t.find.matches[i].rects { hit_box(r, k, i == t.find.cur) } } }
-        if t.mode == "comment" { comment_marks(t, p, k) }
-        if t.mode == "fill" && t.show_fields && t.fields != nil { for f in t.fields { if f.page == p { field_box(t, f, k) } } }
-        GestureView{width: Fill height: Fill cursor: pick(t.mode == "read", MouseCursor.Default, MouseCursor.Hand)
+        // Read mode shows the pages alone: no tool's marks over them.
+        if t.mode == "comment" && !rd { comment_marks(t, p, k) }
+        if t.mode == "fill" && !rd && t.show_fields && t.fields != nil { for f in t.fields { if f.page == p { field_box(t, f, k) } } }
+        GestureView{width: Fill height: Fill cursor: pick(t.mode == "read" || rd, MouseCursor.Default, MouseCursor.Hand)
             on_tap: |x, y| page_tap(cur_tab(), p, x / k, y / k)
             on_double_tap: |x, y| page_double_tap(cur_tab(), p, x / k, y / k)}
-        if t.mode == "edit" && t.edit != nil && t.edit.page == p { edit_box(t, k) }
+        if t.mode == "edit" && !rd && t.edit != nil && t.edit.page == p { edit_box(t, k) }
     }
 }
 fn hit_box(r, k, on){
@@ -2947,7 +3016,24 @@ fn pill_view(){
             SolidView{width: 1 height: 28 margin: Inset{left: 12 right: 12} draw_bg.color: pt_line}
             IconBtn{icon_walk: Walk{width: 21 height: 21} draw_icon +: {svg: icon("fit-width") color: pick(t.fit == "width", pt_accent, pt_icon)} on_click: || { let x = cur_tab() set_zoom(x, fit_width_zoom(x), "width") }}
             IconBtn{margin: Inset{left: 6} icon_walk: Walk{width: 21 height: 21} draw_icon +: {svg: icon("fit-page") color: pick(t.fit == "page", pt_accent, pt_icon)} on_click: || { let x = cur_tab() set_zoom(x, fit_page_zoom(x), "page") }}
+            SolidView{width: 1 height: 28 margin: Inset{left: 12 right: 12} draw_bg.color: pt_line}
+            // Design 02's bar ends with full screen: Read mode, the pages
+            // alone; in it, the way back, always on the bar.
+            if !reading_on(t) {
+                IconBtn{icon_walk: Walk{width: 20 height: 20} draw_icon +: {svg: icon("fullscreen") color: pt_icon} on_click: || enter_reading(cur_tab())}
+            }
+            if reading_on(t) {
+                Flat{height: 36 padding: Inset{left: 10 right: 12} spacing: 8 text: "Exit read mode" icon_walk: Walk{width: 18 height: 18} draw_icon +: {svg: icon("fullscreen-exit") color: pt_icon}
+                    draw_text +: {color: pt_ink2 color_hover: pt_ink color_down: pt_ink text_style: theme.font_regular{font_size: 12}}
+                    on_click: || leave_reading(cur_tab())}
+            }
         }
+    }
+}
+// Read mode's corner control, top right: quiet, and always there.
+fn read_exit_view(){
+    RoundedView{width: Fit height: Fit padding: 3 show_bg: true draw_bg +: {color: pt_corner border_size: 1.0 border_color: pt_line border_radius: 18.0}
+        IconBtn{width: 30 height: 30 icon_walk: Walk{width: 15 height: 15} draw_icon +: {svg: icon("fullscreen-exit") color: pt_muted} on_click: || leave_reading(cur_tab())}
     }
 }
 
@@ -3691,16 +3777,24 @@ fn dialog_view(){
 
 SolidView{width: Fill height: Fill flow: Overlay draw_bg.color: pt_desk
     View{width: Fill height: Fill flow: Down
-        tabs := SolidView{width: Fill height: TAB_H draw_bg.color: pt_tabs on_render: || { tabs_view() }}
+        // Read mode hides these regions through plain wrappers (a view
+        // whose on_render starts hidden stays hidden).
+        tabs_box := View{width: Fill height: Fit
+            tabs := SolidView{width: Fill height: TAB_H draw_bg.color: pt_tabs on_render: || { tabs_view() }}
+        }
         home := SolidView{width: Fill height: Fill flow: Down draw_bg.color: pt_home
             home_pane := ScrollYView{width: Fill height: Fill flow: Down on_render: || { home_view() }}
         }
         doc := View{visible: false width: Fill height: Fill flow: Down
-            modebar := SolidView{width: Fill height: MODE_H draw_bg.color: pt_bar on_render: || { modebar_view() }}
-            Line{}
+            modebar_box := View{width: Fill height: Fit flow: Down
+                modebar := SolidView{width: Fill height: MODE_H draw_bg.color: pt_bar on_render: || { modebar_view() }}
+                Line{}
+            }
             View{width: Fill height: Fill flow: Right
-                rail := SolidView{width: RAIL_W height: Fill draw_bg.color: pt_rail on_render: || { rail_view() }}
-                VLine{}
+                rail_box := View{width: Fit height: Fill flow: Right
+                    rail := SolidView{width: RAIL_W height: Fill draw_bg.color: pt_rail on_render: || { rail_view() }}
+                    VLine{}
+                }
                 panel_narrow := SolidView{visible: false width: PANEL_W height: Fill flow: Down draw_bg.color: pt_panel
                     panel_head := View{width: Fill height: Fit on_render: || { panel_head_view() }}
                     thumbs := ScrollYView{width: Fill height: Fill flow: Down on_render: || { thumbs_view() }}
@@ -3721,7 +3815,9 @@ SolidView{width: Fill height: Fill flow: Overlay draw_bg.color: pt_desk
                 }
                 line_left := VLine{visible: false}
                 View{width: Fill height: Fill flow: Down
-                    toolrow := View{width: Fill height: Fit flow: Down on_render: || { toolrow_view() }}
+                    toolrow_box := View{width: Fill height: Fit
+                        toolrow := View{width: Fill height: Fit flow: Down on_render: || { toolrow_view() }}
+                    }
                     View{width: Fill height: Fill flow: Overlay
                         canvas := ScrollXYView{width: Fill height: Fill flow: Down align: Align{x: 0.5} padding: Inset{top: PAGE_TOP bottom: 92 left: 24 right: 24} on_render: || { canvas_view() }}
                         grid_box := View{visible: false width: Fill height: Fill
@@ -3757,8 +3853,13 @@ SolidView{width: Fill height: Fill flow: Overlay draw_bg.color: pt_desk
                 }
             }
         }
-        Line{}
-        status := SolidView{width: Fill height: STATUS_H draw_bg.color: pt_status on_render: || { status_view() }}
+        status_box := View{width: Fill height: Fit flow: Down
+            Line{}
+            status := SolidView{width: Fill height: STATUS_H draw_bg.color: pt_status on_render: || { status_view() }}
+        }
+    }
+    read_exit_box := View{visible: false width: Fill height: Fill flow: Down align: Align{x: 1.0 y: 0.0} padding: 12
+        read_exit := View{width: Fit height: Fit on_render: || { read_exit_view() }}
     }
     banner := View{visible: false width: Fill height: Fill flow: Down align: Align{x: 0.5 y: 1.0} padding: Inset{left: 16 right: 16 bottom: 84}
         RoundedView{width: Fill max_width: 560 height: Fit flow: Right align: Align{y: 0.5} padding: Inset{left: 16 right: 6 top: 6 bottom: 6}

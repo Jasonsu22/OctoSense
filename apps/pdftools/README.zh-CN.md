@@ -25,7 +25,7 @@ craft 引擎只在桌面版中提供（`craft-engines`）。
 | 模式栏 | Read · Comment · Fill & Sign · Pages · Combine · Edit，当前模式带下划线；Search in document；Undo、Redo；Save |
 | 侧栏与左侧面板 | Pages（缩略图）、Outline（PDF 的书签）、Comments；面板可以收起。查找进行时，结果占用左侧面板（侧栏中没有项目高亮），查找结束后交还 |
 | 画布 | 页面以白色显示在桌面背景上：从你前往的那一页开始的至多八页，每页都是引擎按屏幕分辨率渲染的结果 |
-| 浮动控制条 | 页码“3 / 24”、上一页和下一页、缩小、缩放比例、放大、适合宽度、适合页面 |
+| 浮动控制条 | 页码“3 / 24”、上一页和下一页、缩小、缩放比例、放大、适合宽度、适合页面，以及全屏（阅读模式）；在阅读模式中，该位置换成 Exit read mode |
 | 右侧面板 | Comment：评论线程。Fill & Sign：表单字段以及 Add text、Add date、Add initials。Edit：正在编辑的段落 |
 | 状态栏 | Saved 或 Edited，以及应用存储已用多少、最多可用多少，来自 Shell 的 `files.status`（“14.6 of 64 MB used”、“37 KB of 64 MB used”） |
 
@@ -48,6 +48,7 @@ PDF Tools 以 1296 x 703 点打开，应用区域为 1292 x 667，即它的宽�
 | --- | --- | --- |
 | 主页 | 最近的 PDF 以卡片显示首页、页数、大小和打开时间；Open a PDF from this device（最大 64 MB）；移除 PDF（会再确认一次）；首次运行时的空状态 | `pdf.open`、`pdf.info`、`pdf.page`、`pdf.close` |
 | Read | 页面按 72 dpi × 缩放 × 2 逐页渲染并保留；缩略图逐个填入；大纲可跳转到章节 | `pdf.open`、`pdf.page` |
+| 阅读模式 | 浮动控制条上的全屏按钮：只显示页面。文档标签、模式栏、侧栏和两侧面板、工具行以及状态栏都让出空间，浮动控制条保留上一页和下一页、页码、缩放、适合宽度、适合页面以及 Exit read mode。右上角一个不显眼的按钮也可以退出（脚本收不到按键事件，因此没有 Esc）。进入和退出时，当前页和你选择的缩放保持不变；适合宽度、适合页面或自动缩放会适应新的画布。在页面上点按只会选中该页 | `pdf.page` |
 | 查找 | Search in document 是唯一的查找入口，输入后按 Return：左侧面板显示“12 matches on 7 pages”，结果按页分组、匹配处加粗，每处匹配在页面上高亮，当前匹配更醒目，可前后切换。按 Done、结果面板的关闭按钮或搜索框的清除按钮结束查找后，左侧面板恢复之前显示的内容（之前的内容不明时显示 Pages）；文档发生更改时也以同样方式结束查找 | `pdf.find` |
 | Comment | 对点按的那一行做高亮、下划线或删除线（点按两次作用于整段），在点按处添加 Note 和 Text box，四种颜色可选；带回复、状态和删除的评论线程。评论使用在“Comment as”中保存的名字 | `pdf.lines`、`pdf.comments`、`pdf.comment` |
 | Fill & Sign | 用框线标出表单字段（未填的必填字段为红色）并列出其值；选中一个字段即可输入值；Add text、Add date 和 Add initials 会在点按处放置标记；姓名缩写会被保存 | `pdf.fields`、`pdf.fill`、`pdf.fill_sign` |
@@ -141,7 +142,7 @@ python3 apps/pdftools/tests/ui.py --card-host <App Hub>/target/release/card-host
 
 | 运行 | 覆盖内容 |
 | --- | --- |
-| `shell` | 在 Shell 自己的窗口中、在示例上覆盖每种模式，先浅色，再通过 Shell 自己的样式菜单切到深色（深色这一轮在浅色一轮留下的状态上进行）：主页及其封面、状态栏与存储实际字节数相符、“Open a PDF from this device”被拒绝、阅读和缩略图、查找（“9 matches on 4 pages”）、一处高亮及其回复（日期按本机时钟显示，如“Today 19:42”）、一次旋转及其撤销、带页面范围的合并（“One PDF of 5 pages”）、Fill & Sign 放置的姓名缩写、一次带对齐方式和颜色的文字编辑、保存，以及损坏的文件；之后检查封面缓存中每个 PDF 只有一个封面，且都记在 `library.json` 中 |
+| `shell` | 在 Shell 自己的窗口中、在示例上覆盖每种模式，先浅色，再通过 Shell 自己的样式菜单切到深色（深色这一轮在浅色一轮留下的状态上进行）：主页及其封面、状态栏与存储实际字节数相符、“Open a PDF from this device”被拒绝、阅读和缩略图、阅读模式（从浮动控制条进入，在其中翻页并改变缩放，再用 Exit read mode 或右上角按钮退出，回到同一页、同一缩放）、只用顶栏的查找（“9 matches on 4 pages”，结束时交还左侧面板）、一处高亮及其回复（日期按本机时钟显示，如“Today 19:42”）、一次旋转及其撤销、带页面范围的合并（“One PDF of 5 pages”）、Fill & Sign 放置的姓名缩写、一次带对齐方式和颜色的文字编辑、保存，以及损坏的文件；之后检查封面缓存中每个 PDF 只有一个封面，且都记在 `library.json` 中 |
 | `restart` | 再次使用同一个主目录：资料库、其中的标题、PDF 离开时所在的页面、按导入方式放入的 `Imported PDF.pdf`，以及所有当前封面都被保留、没有重新绘制 |
 | `full` | 存储被填到距 64 MiB 只差 8 KB：主页上的拒绝提示，然后移除一个 PDF（会再确认一次） |
 | `empty` | 没有 PDF：空资料库及其 Open 按钮，浅色和深色 |
@@ -184,7 +185,9 @@ python3 apps/pdftools/dev-fixture/make_fixture.py <card-host app data>/os.pdftoo
 - **未验证**：宿主的文件对话框和真实的导入（隐藏窗口无法打开它）；使用真实引擎时的表单
   字段、大纲、Redo、其他评论和页面操作、受密码保护的 PDF、八个 PDF 的上限以及未保存更改
   的询问（开发夹具覆盖了它们的界面）；其他屏幕尺寸；Linux、Windows、手机。
-- **已知问题**：在负载很高的机器上，一次点按可能超出 64 ms 预算而丢失（在 `library.json`
+- **已知问题**：阅读模式占满的是应用窗口，而不是整个屏幕：应用无法让 OctoSense 窗口本身全屏
+  （没有相应的宿主 API），想要完整效果请将窗口最大化。在负载很高的机器上，一次点按可能超出
+  64 ms 预算而丢失（在 `library.json`
   移出点按路径之前，于 60 到 150 的平均负载下见到过）。在 900 点高的屏幕上（应用区域约为
   1292 x 662），首页卡片的最后一行说明（每个 PDF 上次打开的时间）正好在可见区域边缘；资料库
   可以滚动。引擎既不报告段落的

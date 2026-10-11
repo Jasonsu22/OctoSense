@@ -29,7 +29,7 @@ decision that applies.
 | Mode bar | Read · Comment · Fill & Sign · Pages · Combine · Edit, the current one underlined; Search in document; Undo, Redo; Save |
 | Rail and left panel | Pages (thumbnails), Outline (the PDF's bookmarks), Comments; the panel folds away. A search's results take the panel while it runs (no rail item is lit), and give it back when it ends |
 | Canvas | The pages, white on the desk: a run of up to eight pages from the page you went to, each the engine's render at screen resolution |
-| Pill | Page "3 / 24", previous and next, zoom out, zoom, zoom in, fit width, fit page |
+| Pill | Page "3 / 24", previous and next, zoom out, zoom, zoom in, fit width, fit page, and full screen (Read mode); in Read mode, Exit read mode in its place |
 | Right panel | Comment: the threads. Fill & Sign: the form's fields and Add text, Add date, Add initials. Edit: the paragraph being edited |
 | Status line | Saved or Edited, and what the app's storage holds against what it may hold, from the shell's `files.status` ("14.6 of 64 MB used", "37 KB of 64 MB used") |
 
@@ -59,6 +59,7 @@ page fits the canvas, up to 100%.
 | --- | --- | --- |
 | Home | Recent PDFs as cards with their first page, pages, size and when they were opened; Open a PDF from this device (up to 64 MB); remove a PDF (asks once more); an empty state on a first run | `pdf.open`, `pdf.info`, `pdf.page`, `pdf.close` |
 | Read | Pages render one at a time at 72 dpi x zoom x 2 and are kept; thumbnails fill in one by one; the outline jumps to a section | `pdf.open`, `pdf.page` |
+| Read mode | The pill's full-screen button: the pages alone. The tabs, the mode bar, the rail and both panels, the tool row and the status line give the pages their room, and the pill stays with previous and next, the page, the zoom, fit width and fit page, and Exit read mode. A quiet button at the top right leaves too (a script gets no key events, so there is no Esc). The page and the zoom you chose carry across entering and leaving; a fitted or automatic zoom fits the new canvas. A tap on a page only chooses it | `pdf.page` |
 | Find | Search in document, the one way to search, then Return: "12 matches on 7 pages" in the left panel, the results grouped by page with the match in bold, every match highlighted on its page, the current one stronger, previous and next. Done, the results' cross or the field's cross ends the search, and the left panel shows what it did before (Pages if it showed nothing known); a change to the document ends it the same way | `pdf.find` |
 | Comment | Highlight, Underline or Strike out the line you tap (tap twice for its paragraph), Note and Text box where you tap, in one of four colours; threads with replies, a status, delete. Comments carry the name kept under "Comment as" | `pdf.lines`, `pdf.comments`, `pdf.comment` |
 | Fill & Sign | The form's fields outlined (required empty ones in red) and listed with their values; choose one to type its value; Add text, Add date and Add initials place a mark where you tap; initials are kept | `pdf.fields`, `pdf.fill`, `pdf.fill_sign` |
@@ -174,7 +175,7 @@ exceeded` in its log); `--budget-ms 1000` raises the hosts' budget
 
 | Run | What it covers |
 | --- | --- |
-| `shell` | Every mode on the samples in the shell's own window, light, then dark through the shell's own style menu (the dark pass works on what the light pass left): Home and its covers, the status line against the storage's own bytes, "Open a PDF from this device" refused, reading and thumbnails, find ("9 matches on 4 pages"), a highlight and its reply dated on this machine's clock ("Today 19:42"), a rotation and its undo, combine with a page range ("One PDF of 5 pages"), initials placed by Fill & Sign, a text edit with an alignment and a colour, save, and the damaged file; then one cover per PDF in the cover cache, each in `library.json` |
+| `shell` | Every mode on the samples in the shell's own window, light, then dark through the shell's own style menu (the dark pass works on what the light pass left): Home and its covers, the status line against the storage's own bytes, "Open a PDF from this device" refused, reading and thumbnails, Read mode (entered from the pill, a page turned and the zoom changed in it, left by Exit read mode or the corner control on that page at that zoom), find ("9 matches on 4 pages") from the top bar alone, with the left panel given back when it ends, a highlight and its reply dated on this machine's clock ("Today 19:42"), a rotation and its undo, combine with a page range ("One PDF of 5 pages"), initials placed by Fill & Sign, a text edit with an alignment and a colour, save, and the damaged file; then one cover per PDF in the cover cache, each in `library.json` |
 | `restart` | The same home again: the library, its titles, the page a PDF was left at, `Imported PDF.pdf` placed as an import leaves one, and every current cover kept, not drawn again |
 | `full` | Storage filled to 8 KB short of its 64 MiB: the refusal on Home, then a removal, which asks once more |
 | `empty` | No PDFs: the empty library and its Open button, light and dark |
@@ -228,7 +229,10 @@ that refusal.
   other comment and page operations, password-protected PDFs, the eight-PDF
   cap and the unsaved-changes question (the dev fixture covers their screens);
   other screen sizes; Linux, Windows, phones.
-- **Known**: on a heavily loaded machine a tap can overrun the 64 ms budget
+- **Known**: Read mode fills the app's window, not the screen: no app can
+  make the OctoSense window itself full screen (there is no host API for it),
+  so maximize the window for the full effect. On a heavily loaded machine a
+  tap can overrun the 64 ms budget
   and be lost (seen at load averages of 60 to 150 before `library.json` moved
   off the tap path). On a screen 900 points tall (an app area of about
   1292 x 662), Home's last caption line (when each PDF was last opened) sits

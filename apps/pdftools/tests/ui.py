@@ -14,7 +14,10 @@ call is real.
            dark through the shell's own style menu (the dark pass works on
            what the light pass left): Home and its status line against the
            storage's own bytes (files.status), "Open a PDF from this device"
-           refused, reading and thumbnails, find, a highlight and its reply
+           refused, reading and thumbnails, Read mode (entered from the bar,
+           a page turned and the zoom changed, left by Exit read mode or the
+           corner control on that page at that zoom), find from the top bar
+           alone (the left panel given back), a highlight and its reply
            dated on this machine's clock, a rotation and its undo, combine
            with a page range, initials placed by Fill & Sign, a text edit with
            an alignment and a colour, save, a damaged file; then one cover
@@ -739,6 +742,75 @@ def close_results(app, title):
     app.click(bx + bw / 2, by + bh / 2)
 
 
+def pill_end(app):
+    """The floating bar's last icon button: Read mode's full-screen button."""
+    label = next(w for w in app.widgets() if re.fullmatch(r"\d+ / \d+", w.get("t") or ""))
+    row, _ = icon_buttons_near(app, label["t"], "Label")
+    bx, by, bw, bh = row[-1]
+    app.click(bx + bw / 2, by + bh / 2)
+
+
+def zoom_button(app, step):
+    """The floating bar's zoom out (-1) or in (+1), either side of its zoom."""
+    label = next(w for w in app.widgets() if re.fullmatch(r"\d+%", w.get("t") or ""))
+    row, (x, y, w, h) = icon_buttons_near(app, label["t"], "Label")
+    if step > 0:
+        bx, by, bw, bh = [r for r in row if r[0] >= x + w - 1][0]
+    else:
+        bx, by, bw, bh = [r for r in row if r[0] + r[2] <= x + 1][-1]
+    app.click(bx + bw / 2, by + bh / 2)
+
+
+def corner_exit(app):
+    """Read mode's corner control: the icon button at the app's top right."""
+    ax, ay, aw, ah = app.area()
+    corner = [w["r"] for w in app.widgets() if w["ty"] in ("Button", "ButtonFlat") and not w.get("t")
+              and w["r"][0] > ax + aw - 90 and w["r"][1] < ay + 90]
+    assert corner, "no corner control in Read mode"
+    bx, by, bw, bh = corner[0]
+    app.click(bx + bw / 2, by + bh / 2)
+
+
+def read_mode(app, out, p, dark):
+    """Read mode (the user: "there is no full screen read mode?"): entered
+    from the floating bar's last button, the pages alone; a page turned and
+    the zoom changed in it; left from the bar's Exit read mode (light) or the
+    corner control (dark), on that page at that zoom."""
+    page = next(w["t"] for w in app.widgets() if re.fullmatch(r"\d+ / \d+", w.get("t") or ""))
+    pill_end(app)
+    app.find("Exit read mode", "Button")
+    app.gone("Search in document")
+    assert labels(app, "Outline") == 0 and labels(app, "Comments") == 0, "the rail shows in Read mode"
+    assert not [w for w in app.widgets() if w.get("t") in ("Saved", "Edited")], "the status line shows in Read mode"
+    app.find(page, "Label")  # the same page
+    app.images(1)
+    app.grab(out, f"{p}02c-read-mode")
+    pill_next(app)
+    n, total = page.split(" / ")
+    turned = f"{int(n) + 1} / {total}"
+    app.find(turned, "Label")
+    before = zoom(app)
+    zoom_button(app, +1)
+    wait_until(lambda: zoom(app) > before, "the zoom did not change in Read mode")
+    zoomed = zoom(app)
+    app.images(1)
+    app.grab(out, f"{p}02d-read-mode-zoomed")
+    if dark:
+        corner_exit(app)
+    else:
+        app.tap("Exit read mode", "Button")
+    app.find("Search in document", "TextInput")  # the bars are back
+    app.gone("Exit read mode")
+    app.find(turned, "Label")
+    assert zoom(app) == zoomed, f"Read mode left at {zoomed}, the document shows {zoom(app)}"
+    app.images(1)
+    app.grab(out, f"{p}02e-read-mode-left")
+    RECEIPT.setdefault("read_mode", []).append({"pass": "dark" if dark else "light", "entered_on": page, "left_on": turned,
+                                                "zoom": [before, zoomed], "left_by": "corner control" if dark else "Exit read mode"})
+    zoom_button(app, -1)  # the zoom the rest of the journey reads at
+    wait_until(lambda: zoom(app) == before, "the zoom did not go back")
+
+
 def covers_kept(jail):
     """The covers in the pdf service's cache: file name -> modification time."""
     folder = jail / ".cache/covers"
@@ -777,6 +849,7 @@ def shell_journey(app, out, dark):
     app.find("2 / 4", "Label")
     app.images(2)
     app.grab(out, f"{p}02b-page-2")
+    read_mode(app, out, p, dark)
 
     # One search, in the top bar: the rail offers Pages, Outline and Comments.
     assert rail_labels(app) == ["Pages", "Outline", "Comments"], f"the rail: {rail_labels(app)}"

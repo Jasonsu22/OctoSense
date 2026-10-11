@@ -278,3 +278,44 @@ fn a_search_gives_the_left_side_back_when_it_ends() {
     assert_eq!(back("nil"), json!("pages"));
     assert_eq!(back("\"search\""), json!("pages"));
 }
+
+#[test]
+fn read_mode_shows_the_pages_alone() {
+    // The user: "there is no full screen read mode?". In Read mode only the
+    // pages, the floating bar and the corner control that leaves it show.
+    assert_eq!(
+        pdftools_model("chrome_for(true).to_json()"),
+        json!({"tabs": false, "modebar": false, "rail": false, "panels": false, "right": false, "toolrow": false, "status": false, "exit": true})
+    );
+    assert_eq!(
+        pdftools_model("chrome_for(false).to_json()"),
+        json!({"tabs": true, "modebar": true, "rail": true, "panels": true, "right": true, "toolrow": true, "status": true, "exit": false})
+    );
+    // The canvas: the window less the rail (84 and its line), the panels and
+    // the bars (tab row 53, mode bar 54, status line 44, two lines); in Read
+    // mode, the whole window.
+    let canvas = |w: u32, h: u32, reading: bool, left: u32, right: u32| {
+        pdftools_model(&format!("canvas_size({w}, {h}, {reading}, {left}, {right}).to_json()"))
+    };
+    assert_eq!(canvas(1292, 662, false, 205, 0), json!([1002, 509]), "the window's own size, Pages open");
+    assert_eq!(canvas(1292, 662, true, 205, 425), json!([1292, 662]), "Read mode: the panels' room is the pages'");
+    assert_eq!(canvas(990, 603, false, 205, 321), json!([379, 450]));
+    assert_eq!(canvas(300, 200, false, 205, 321), json!([240, 240]), "never smaller than 240");
+}
+
+#[test]
+fn read_mode_keeps_the_zoom_the_person_chose() {
+    // Entering or leaving Read mode: a chosen zoom stays, a fit fits the new
+    // canvas, the automatic zoom is worked out again. (The script's numbers
+    // are single precision: compared to a ten-thousandth.)
+    let kept = |zoom: f64, auto: bool, fit: &str, fit_w: f64, fit_p: f64, start: f64| {
+        pdftools_model(&format!("kept_zoom({zoom}, {auto}, \"{fit}\", {fit_w}, {fit_p}, {start}).to_json()")).as_f64().unwrap()
+    };
+    let near = |got: f64, want: f64, what: &str| assert!((got - want).abs() < 1e-4, "{what}: {got} for {want}");
+    near(kept(1.25, false, "", 2.0907, 0.6766, 1.0), 1.25, "the zoom the person chose");
+    near(kept(0.8, true, "", 2.0907, 0.6766, 1.0), 1.0, "the automatic zoom, worked out again");
+    near(kept(1.6, false, "width", 2.0907, 0.6766, 1.0), 2.09, "fit width, on the new canvas");
+    near(kept(1.6, false, "page", 2.0907, 0.6766, 1.0), 0.67, "fit page, on the new canvas");
+    near(kept(1.0, false, "width", 5.5, 0.1, 1.0), 4.0, "at most 400%");
+    near(kept(1.0, false, "page", 5.5, 0.1, 1.0), 0.25, "at least 25%");
+}
