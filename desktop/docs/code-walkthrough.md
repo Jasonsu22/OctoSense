@@ -335,3 +335,15 @@ independently of AppCard. AppCard's legacy `personal-data` integration reads the
 older native Mail format; current Mail owns its cache in a host service. Start
 with Reference for native hosting, Calendar/News for app tools, and AppCard's
 own docs when changing its routing and card-generation product.
+
+## Application update and restart
+
+`crates/updater-ui` is a native module without agent tools. On macOS, its worker
+verifies and stages a release, then hands a waiting helper to
+`crates/shell/src/update_restart.rs`. The shell asks hosted modules and process
+apps to close; cancellation and unanswered requests never force them to exit
+for an update. Only an agreed shutdown commits the helper. After the old process
+exits, the helper exchanges bundles atomically and starts the same profile.
+`crates/updater/src/macos` validates the new startup or restores the retained
+previous bundle; [the updater guide](../../docs/updater.md) explains the
+compatibility check for older releases and the manual recovery path.

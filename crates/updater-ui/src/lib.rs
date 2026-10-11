@@ -19,6 +19,8 @@ use std::{
 };
 
 mod install;
+#[cfg(target_os = "macos")]
+pub mod restart;
 
 static CACHE: OnceLock<PathBuf> = OnceLock::new();
 static BUSY: AtomicBool = AtomicBool::new(false);
@@ -72,6 +74,7 @@ script_mod! {
                 download := Button { width: Fill height: 44 text: "Download update" visible: false }
                 cancel := Button { width: Fill height: 44 text: "Cancel download" visible: false }
                 install := Button { width: Fill height: 44 text: "Open installer" visible: false }
+                manual := Button { width: Fill height: 44 text: "Open installer manually" visible: false }
                 permission := Button { width: Fill height: 44 text: "Allow updates in Android Settings" visible: false }
                 retry_install := Button { width: Fill height: 44 text: "Refresh installation status" visible: false }
                 notes := Button { width: Fill height: 44 text: "Release notes" visible: false }
@@ -86,6 +89,8 @@ enum Completed {
     Downloaded(VerifiedArtifact),
     Opened(String),
     AndroidReady(PathBuf, String),
+    #[cfg(target_os = "macos")]
+    MacPrepared(octosense_updater::macos::Prepared),
 }
 enum WorkerEvent {
     Progress(u64, u64),
@@ -177,6 +182,10 @@ pub struct UpdaterView {
     install_down: bool,
     #[rust]
     permission_down: bool,
+    #[rust]
+    mac_restart: bool,
+    #[rust]
+    restart_waiting: bool,
 }
 
 impl UpdaterView {
@@ -219,6 +228,8 @@ impl UpdaterView {
         );
         self.identity = Some(identity);
         self.cache = CACHE.get().cloned();
+        #[cfg(target_os = "macos")]
+        { self.mac_restart = octosense_updater::macos::available(); }
         self.message = "Check for an update when you are ready.".into();
         if cfg!(target_os = "android") {
             self.message = "Checking this Android installation…".into();
@@ -230,7 +241,7 @@ impl UpdaterView {
     }
 
     fn refresh(&mut self, cx: &mut Cx) {
-        let busy = self.task.is_some();
+        let busy = self.task.is_some() || self.restart_waiting;
         let supported = Platform::current(Self::product()).is_some()
             && self.cache.is_some()
             && (!cfg!(target_os = "android") || self.android_standalone);
@@ -255,6 +266,7 @@ impl UpdaterView {
             .button(cx, ids!(download))
             .set_visible(cx, self.offer.is_some() && self.artifact.is_none() && !busy);
         self.view.button(cx, ids!(cancel)).set_visible(cx, busy);
+        self.view.button(cx, ids!(cancel)).set_text(cx, if self.restart_waiting { "Cancel restart" } else { "Cancel" });
         self.view
             .button(cx, ids!(cancel))
             .set_enabled(cx, busy && !self.android_install_pending);
@@ -266,10 +278,13 @@ impl UpdaterView {
             cx,
             if cfg!(target_os = "android") {
                 "Review and install update"
+            } else if self.mac_restart {
+                "Install & Restart"
             } else {
                 "Open verified installer"
             },
         );
+        self.view.button(cx, ids!(manual)).set_visible(cx, self.mac_restart && self.artifact.is_some() && !busy);
         self.view.button(cx, ids!(permission)).set_visible(
             cx,
             cfg!(target_os = "android")
@@ -373,7 +388,7 @@ impl UpdaterView {
     }
 
     /// `tapped`: the click's press and release were both real taps.
-    fn install(&mut self, tapped: bool) {
+    fn install(&mut self, tapped: bool, automatic: bool) {
         if self.task.is_some() || self.android_install_pending {
             return;
         }
@@ -385,8 +400,15 @@ impl UpdaterView {
             self.message = "Tap Install directly on the phone to review this update.".into();
             return;
         }
-        self.message = "Rechecking the downloaded file…".into();
+        self.message = if automatic { "Preparing the update. OctoSense will ask apps to close before restarting…" }
+            else { "Rechecking the downloaded file…" }.into();
         self.start(worker(move |cancel, _| {
+            #[cfg(target_os = "macos")]
+            if automatic {
+                return octosense_updater::macos::prepare(&artifact, cancel).map(Completed::MacPrepared);
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = automatic;
             if cfg!(target_os = "android") {
                 let path = artifact.revalidate().map_err(|e| e.to_string())?;
                 if cancel.is_cancelled() {
@@ -407,6 +429,12 @@ impl UpdaterView {
     }
 
     fn poll(&mut self, cx: &mut Cx) {
+        #[cfg(target_os = "macos")]
+        if self.restart_waiting && !restart::pending() {
+            self.restart_waiting = false;
+            self.message = "Restart cancelled. The installed app was not changed.".into();
+            self.refresh(cx);
+        }
         let events: Vec<_> = self
             .task
             .as_ref()
@@ -455,6 +483,8 @@ impl UpdaterView {
                             self.artifact = Some(artifact);
                             self.message = if cfg!(target_os = "android") {
                                 "Download verified. Save your work, then choose Review and install update. Android will ask you to confirm."
+                            } else if self.mac_restart {
+                                "Download verified. Save your work, then choose Install & Restart. Your profile will be preserved."
                             } else {
                                 "Download verified. Save your work, then choose Open verified installer. Installation may restart OctoSense."
                             }.into();
@@ -473,6 +503,12 @@ impl UpdaterView {
                                 "update_install",
                                 serde_json::json!({"path":path,"sha256":digest}),
                             );
+                        }
+                        #[cfg(target_os = "macos")]
+                        Ok(Completed::MacPrepared(prepared)) => {
+                            restart::request(prepared);
+                            self.restart_waiting = true;
+                            self.message = "The update is ready. Waiting for your apps to finish saving and close. You can cancel the restart.".into();
                         }
                         Err(error) => {
                             self.install_opened = false;
@@ -580,6 +616,7 @@ impl Widget for UpdaterView {
             ids!(download),
             ids!(cancel),
             ids!(install),
+            ids!(manual),
             ids!(notes),
             ids!(permission),
             ids!(retry_install),
@@ -604,6 +641,8 @@ impl Widget for UpdaterView {
             self.download();
         }
         if self.view.button(cx, ids!(cancel)).clicked(&actions) {
+            #[cfg(target_os = "macos")]
+            restart::cancel();
             if let Some(task) = &self.task {
                 task.cancel.cancel();
                 self.message = "Cancelling…".into();
@@ -611,7 +650,10 @@ impl Widget for UpdaterView {
         }
         if self.view.button(cx, ids!(install)).clicked(&actions) {
             let down = std::mem::take(&mut self.install_down);
-            self.install(down && trusted);
+            self.install(down && trusted, self.mac_restart);
+        }
+        if self.view.button(cx, ids!(manual)).clicked(&actions) {
+            self.install(false, false);
         }
         if self.view.button(cx, ids!(notes)).clicked(&actions) {
             if let Some(offer) = &self.offer {
@@ -658,6 +700,8 @@ impl AppModule for UpdaterModule {
             executor: Box::new(NoTools),
             shutdown: Box::new(move |vm| {
                 if let Some(mut view) = closing.borrow_mut::<UpdaterView>() {
+                    #[cfg(target_os = "macos")]
+                    if view.restart_waiting { restart::cancel(); }
                     if let Some(task) = view.task.take() {
                         task.cancel.cancel();
                     }

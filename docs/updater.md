@@ -5,7 +5,7 @@ English | [简体中文](updater.zh-CN.md)
 Open **OctoSense Updates** in the desktop or Home launcher. Android Home also
 offers **Settings → Updates → Open OctoSense app updater**. Choose a channel,
 then **Check for updates**. Review the offered version and download size, choose
-**Download update**, and open the installer separately after verification.
+**Download update**, then explicitly choose installation after verification.
 
 | Channel | Eligible releases |
 | --- | --- |
@@ -28,20 +28,60 @@ installed release and cannot offer an update.
 
 | Platform | Handoff | What the user finishes |
 | --- | --- | --- |
-| macOS, Apple silicon | Opens the verified `.dmg` | Quit OctoSense, drag the new app into Applications, confirm replacement, then reopen it. |
+| macOS, Apple silicon | This source build offers **Install & Restart** in a packaged app with its helper; RC6 opens the verified `.dmg` | Save or resolve any app close questions. The helper replaces the bundle and reopens the same profile. **Open installer manually** remains available. |
 | Windows, x64 | Starts the verified NSIS `.exe` directly | Follow its prompts; close OctoSense when requested. |
 | Linux, x86_64, Debian package | Saves a copy of the verified `.deb` in the Downloads folder, checks it, and opens it with the desktop's package handler | Approve the package installation, then restart. Without a desktop package handler, install that file with the distribution's package manager. |
 | Linux, x86_64, AppImage | Saves a checked, executable copy in the Downloads folder and opens that folder | Quit OctoSense, replace the old AppImage with the new one, then open it. The updater does not overwrite the running image. |
 | Android, ARM64 | Checks the verified APK against installed Home and stages it with Android's package installer | Review and confirm the operating system's installation prompt. |
 
-Opening an installer does **not** report a completed installation. This first
-version does not check periodically, silently quit, elevate itself, overwrite
-the running application, or remove the user's profile. The operating system's
+Opening an installer does **not** report a completed installation. Checks remain
+manual. The updater does not elevate itself or remove the user's profile.
+On macOS, replacement happens only after **Install & Restart**, app close review,
+and the old process exiting. The operating system's
 installer still runs its own checks, but macOS and Windows do not show the
 warnings they give a file downloaded in a browser (Gatekeeper's, SmartScreen's):
 the updater does not mark its downloads as coming from the internet. It relies
 on GitHub's signature on the release instead ([Verification and
 privacy](#verification-and-privacy)).
+
+### macOS Install & Restart (source build; not in RC6)
+
+The first release containing this helper still needs to be installed through
+RC6's manual installer flow. Subsequent updates can replace the complete app
+bundle, including resources and the kernel, without a Finder drag operation.
+A renamed app stays at its current path; an unwritable installation folder
+falls back to manual installation without asking for elevated privileges.
+
+Preparation runs in the background: recheck the signed DMG, mount it read-only,
+validate its bundle ID and release version, and copy it to a private sibling
+folder. Fingerprints cover file contents, names, permissions and contained
+symlinks. Only then does the host ask apps to close through their existing
+save/close protocol. A refusal waits for the person; an unanswered request
+cancels the update instead of force-closing the app. Cancelling or closing the
+Updates window before shutdown cancels the waiting helper.
+
+The helper is copied outside the app before it starts. It requires confirmation
+on a private pipe, waits for the host to exit, and refuses replacement while
+another process uses that bundle. One atomic filesystem exchange installs the
+new bundle and retains the previous one. The new app reopens with the same
+profile and acknowledges its first drawn frame. A failed startup restores the
+previous bundle when both fingerprints still match. App data is **not** rolled
+back: compatibility of any future profile migration remains a release concern.
+
+An older target such as public RC6 has no startup-acknowledgement protocol.
+For that compatibility test only, remaining alive for 15 seconds is the health
+check; it does not prove a functioning UI. The receipt records that distinction.
+Neither path proves that every app or model provider works after an update.
+
+Backups are retained in `.octosense-update-<id>/candidate.app` beside the
+installed app. `updates/last-install.json` records the outcome; private
+`install-<id>.log` files record helper errors. A helper interruption leaves a
+complete bundle at the installed path and both versions available. With all
+instances closed, the retained helper's `--restore <job.json>` operation can
+restore the original bundle, including when interruption occurred immediately
+before or after exchange. It refuses changed bundles and is safe to repeat.
+Delete a retained staging folder only after confirming the new version works
+and no installer is running. Backup retention is manual in this implementation.
 
 Linux package handlers may be unable to read the hidden profile folder the
 download lives in (Ubuntu's App Center is a snap, and snaps cannot see hidden
@@ -116,6 +156,9 @@ The updater is a native host interface, not an App Hub app or an agent tool.
   makes for each release ([desktop/README.md](../desktop/README.md#cutting-a-desktop-release)).
 - [`crates/updater-ui`](../crates/updater-ui/src/lib.rs) owns the native module
   and explicit user actions. Network work and hashing run off the drawing thread.
+- [`macos`](../crates/updater/src/macos/mod.rs) owns staging, the independent
+  helper, atomic exchange and recovery; the shell bridges installation to its
+  existing close review in [`update_restart.rs`](../crates/shell/src/update_restart.rs).
 - [`install.rs`](../crates/updater-ui/src/install.rs) uses literal arguments
   for desktop installer handoff; release data never becomes a shell command.
 - Android's native extension independently checks package, version, signer and
@@ -179,9 +222,16 @@ checks the new Client's offer and verification logic; RC5 itself has no updater.
 | Linux x64 | Six native startup checks; live signed RC check reports up to date in an isolated DEB filesystem layout and extracted official AppImage. No system package installation or FUSE launch. |
 | Windows x64 | Official build and static archive, executable, resource and kernel-receipt checks. GUI installation and launch remain **unverified**. |
 
-Native installer handoff and replacing an installed desktop app remain
-**unverified** for RC6. Full installed-app workflows and model calls were not
-part of this release acceptance. Before signature enforcement was added,
+The macOS Install & Restart source build passed 21 isolated native checks
+against the signed public RC6 DMG: cancel, automatic replacement and relaunch,
+RC6/up-to-date UI, unchanged Unicode note, preserved and runnable Repo Radar,
+recovery and cleanup. The starting build was **source labelled RC5**, not the
+historical RC5 release. Local source-bundle fixtures separately passed 13 checks
+for first-frame acknowledgement, failed-start rollback, profile preservation
+and cleanup; the rollback notification was also visually reviewed. These
+fixtures do not replace release-signature verification. An actual cargo-packager
+run included the exact helper and protocol marker. Windows/Linux installation,
+other installed-app workflows and model calls remain **unverified**. Before signature enforcement was added,
 isolated macOS tests exercised an RC1 → RC2 download, tamper rejection,
 channel changes and cancellation; those are historical checks, not proof that
 unsigned older releases are accepted by RC6. Cleanup and Linux's copy into
