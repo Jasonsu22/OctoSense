@@ -83,6 +83,19 @@ impl std::fmt::Debug for Area {
 /// Staging folders' names start with this, inside the area they stage for.
 pub const STAGING_PREFIX: &str = ".engine-staging-";
 
+/// The words that end every refusal of an [`Area`] for its quota
+/// ([`Area::write`], [`Area::check`], [`Stage::commit`]): the result would
+/// not fit what is left of the storage. Built into those messages here, so
+/// [`no_room`] can never drift from them.
+pub const NO_ROOM: &str = "bytes left in this storage";
+
+/// Whether `error`, an error an [`Area`] returned, is its quota refusal
+/// ([`NO_ROOM`]), which a service answers as its own "storage is full",
+/// rather than any other refusal (a name taken, a path outside the area).
+pub fn no_room(error: &str) -> bool {
+    error.ends_with(NO_ROOM)
+}
+
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
 impl Area {
@@ -201,7 +214,7 @@ impl Area {
         };
         if let Some(room) = self.room() {
             if len > room.saturating_add(replaced) {
-                return Err(format!("the result is {len} bytes, more than the {room} bytes left in this storage"));
+                return Err(format!("the result is {len} bytes, more than the {room} {NO_ROOM}"));
             }
         }
         Ok(replaced)
@@ -352,7 +365,7 @@ impl Stage<'_> {
         }
         if let Some(room) = self.area.room() {
             if added > room.saturating_add(freed) {
-                return Err(format!("the results are {added} bytes, more than the {room} bytes left in this storage"));
+                return Err(format!("the results are {added} bytes, more than the {room} {NO_ROOM}"));
             }
         }
         let mut placed: Vec<&Path> = Vec::new();
@@ -573,6 +586,22 @@ mod tests {
         assert_eq!(app.room(), Some(0));
         assert!(app.write(&dir.path().join("d"), b"1").is_err());
         assert_eq!(Area::new(dir.path(), None, false).room(), None);
+    }
+
+    /// Every quota refusal, and only a quota refusal, is [`no_room`]'s.
+    #[test]
+    fn quota_refusals_are_told_apart_from_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let area = Area::new(dir.path(), Some(4), false);
+        assert!(no_room(&area.write(&dir.path().join("a"), b"123456").unwrap_err()));
+        assert!(no_room(&area.check(&dir.path().join("a"), 5).unwrap_err()));
+        let stage = area.stage().unwrap();
+        std::fs::write(stage.path("b"), b"123456").unwrap();
+        assert!(no_room(&stage.commit(&[(stage.path("b"), dir.path().join("b"))]).unwrap_err()));
+        area.write(&dir.path().join("c"), b"1").unwrap();
+        let taken = area.write(&dir.path().join("c"), b"1").unwrap_err();
+        assert!(!no_room(&taken), "{taken}");
+        assert!(!no_room(&area.check(&dir.path().join("x/../y"), 1).unwrap_err()));
     }
 
     /// What a call removes outside its own writes (a cache it cleared) is
