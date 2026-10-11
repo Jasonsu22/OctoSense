@@ -107,10 +107,14 @@ Notes for whoever changes the script:
 - **Engine work runs on the shell's UI thread (#399).** The app keeps one
   background render out at a time (`pump()`): the current page and the two
   after it, then the visible thumbnails, then the rest of the run, then the
-  other thumbnails, then Home's covers. A cover is drawn once (`pdf.cover`)
-  and kept, its path in `library.json`, so a start with every cover kept asks
-  the engine nothing; a save marks its PDF's cover stale, and Remove deletes
-  it. Pages and size come once, from `pdf.info`. A change drops only the renders of
+  other thumbnails, then Home's covers. Once a start, Home asks `pdf.cover`
+  for each of the first 32 PDFs it shows (the service keeps at most 32): a
+  kept cover answers from its file alone, a stat and a 24-byte read, and the
+  picture named in `library.json` shows meanwhile. A cover at a new path is a
+  PDF that changed (a save), so its pages and size are read again from
+  `pdf.info`, as they are for a PDF beyond the first 32 that has none. A save
+  also records the open document's page count, and Remove deletes the
+  cover. A change drops only the renders of
   the pages it touched; Undo and Redo, which don't say what changed, redraw
   the run on show.
 - **No scroll position for script apps.** The runtime gives a script app no
@@ -176,7 +180,7 @@ exceeded` in its log); `--budget-ms 1000` raises the hosts' budget
 | Run | What it covers |
 | --- | --- |
 | `shell` | Every mode on the samples in the shell's own window, light, then dark through the shell's own style menu (the dark pass works on what the light pass left): Home and its covers, the status line against the storage's own bytes, "Open a PDF from this device" refused, reading and thumbnails, Read mode (entered from the pill, a page turned and the zoom changed in it, left by Exit read mode or the corner control on that page at that zoom), find ("9 matches on 4 pages") from the top bar alone, with the left panel given back when it ends, a highlight and its reply dated on this machine's clock ("Today 19:42"), a rotation and its undo, combine with a page range ("One PDF of 5 pages"), initials placed by Fill & Sign, a text edit with an alignment and a colour, save, and the damaged file; then one cover per PDF in the cover cache, each in `library.json` |
-| `restart` | The same home again: the library, its titles, the page a PDF was left at, `Imported PDF.pdf` placed as an import leaves one, and every current cover kept, not drawn again |
+| `restart` | The same home again: the library, its titles, the page a PDF was left at, `Imported PDF.pdf` placed as an import leaves one, every current cover kept, not drawn again, and a PDF removed from Home taking its kept cover with it |
 | `full` | Storage filled to 8 KB short of its 64 MiB: the refusal on Home, then a removal, which asks once more |
 | `empty` | No PDFs: the empty library and its Open button, light and dark |
 | `missing` | `card-host` with the shipped bundle: no engine and no files service |

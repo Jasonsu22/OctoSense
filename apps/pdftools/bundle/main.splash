@@ -813,39 +813,44 @@ fn opened_text(d, days){
 }
 
 // Each PDF's cover (its first page) and its pages and size, one engine call
-// at a time. A cover is kept in the pdf service's cache across closes and
-// runs (pdf.cover), and its path in library.json, so a start with every
-// cover kept asks the engine nothing; pages and size come once (pdf.info).
-fn needs_cover(d){
-    if d.error != "" || d.locked || optional(st.cover_tried, d.name, nil) != nil { return false }
-    optional(st.covers, d.name, nil) == nil || d.cover == "" || d.pages == nil || d.bytes == nil
-}
+// at a time. Once a start, Home asks pdf.cover for each of the first
+// SHOWN_COVERS PDFs it shows: the service keeps at most that many covers, and
+// asking for more would evict the ones Home shows first. A kept cover answers
+// from its file alone (a stat and a 24-byte read), and the picture kept in
+// library.json shows meanwhile. A cover at another path is a PDF that
+// changed since (a save, a replacement): its pages and size are read again
+// (pdf.info), as they are for a PDF beyond the first ones that has none.
+let SHOWN_COVERS = 32
 fn cover_next(){
     if st.busy || st.engine == "missing" || st.engine == "old" { return false }
-    for d in st.docs {
-        if needs_cover(d) {
-            read_cover(d)
-            return true
+    for i d in st.docs {
+        if d.error == "" && !d.locked && optional(st.cover_tried, d.name, nil) == nil {
+            if i < SHOWN_COVERS {
+                read_cover(d)
+                return true
+            }
+            if d.pages == nil || d.bytes == nil {
+                st.cover_tried[d.name] = true
+                st.busy = true
+                st.busy_at = time_now()
+                doc_facts(d)
+                return true
+            }
         }
     }
     false
 }
 fn read_cover(d){
     st.cover_tried[d.name] = true
-    if d.cover != "" && fs.exists(d.cover) {
+    if optional(st.covers, d.name, nil) == nil && d.cover != "" && fs.exists(d.cover) {
         let src = try { binary_resource(fs.read_bytes(d.cover)) } catch { nil }
-        if src != nil { st.covers[d.name] = src }
+        if src != nil {
+            st.covers[d.name] = src
+            render_home()
+        }
     }
     st.busy = true
     st.busy_at = time_now()
-    if optional(st.covers, d.name, nil) != nil && d.cover != "" {
-        if d.pages != nil && d.bytes != nil {
-            cover_done()
-            return
-        }
-        doc_facts(d)
-        return
-    }
     engine("cover", {path: d.path dpi: COVER_DPI}, fn(a){
         if engine_gone(a) {
             st.busy = false
@@ -854,12 +859,14 @@ fn read_cover(d){
         }
         wrote(a)
         if !a.is_ok {
-            // A damaged or locked PDF says so on its card. A shell without
-            // covers, or a full storage, leaves the card without one, and its
-            // pages and size still come from the file (pdf.info writes
-            // nothing).
-            if !outdated(a.error) && !storage_full(a.error) {
-                doc_failed(d, a.error)
+            // A damaged or locked PDF says so on its card. No room
+            // (storage_full), a first page too large to draw small
+            // (too_large), or a shell without covers leaves the card without
+            // one, and its pages and size still come from the file (pdf.info
+            // writes nothing).
+            let e = a.error
+            if !outdated(e) && !storage_full(e) && err_code(e) != "too_large" {
+                doc_failed(d, e)
                 cover_done()
                 return
             }
@@ -871,20 +878,20 @@ fn read_cover(d){
             return
         }
         let path = optional(a.data, "path", "")
-        let src = try { binary_resource(fs.read_bytes(path)) } catch { nil }
-        if src != nil {
-            st.covers[d.name] = src
-            d.cover = path
+        let moved = path != d.cover
+        if moved || optional(st.covers, d.name, nil) == nil {
+            let src = try { binary_resource(fs.read_bytes(path)) } catch { nil }
+            if src != nil { st.covers[d.name] = src }
         }
-        if d.pages == nil || d.bytes == nil {
+        d.cover = path
+        if moved || d.pages == nil || d.bytes == nil {
             doc_facts(d)
             return
         }
-        remember(d)
         cover_done()
     })
 }
-// A PDF's pages and size, read once from the file (the library keeps them).
+// A PDF's pages and size, from the file (the library keeps them).
 fn doc_facts(d){
     engine("info", {path: d.path}, fn(i){
         if i.is_ok {
@@ -897,8 +904,10 @@ fn doc_facts(d){
         cover_done()
     })
 }
-// A saved PDF's cover is out of date: Home asks for its new one, keeping the
-// old picture until it comes (the service drops the old file then).
+// A saved PDF changed: its kept cover is out of date, so library.json names
+// none, and Home asks pdf.cover for it again, whose new path makes it read
+// the pages and size again too; the old picture shows until the new one comes
+// (the service drops the old file then).
 fn stale_cover(d){
     d.cover = ""
     let tried = {}
@@ -1608,6 +1617,9 @@ fn save(t, then){
         let d = doc_named(t.name)
         if d != nil {
             d.bytes = optional(a.data, "bytes", d.bytes)
+            // Its pages as the open document has them (a page deleted and
+            // saved is gone from Home and Combine too).
+            if t.pages > 0 { d.pages = t.pages }
             stale_cover(d)
             remember(d)
         }

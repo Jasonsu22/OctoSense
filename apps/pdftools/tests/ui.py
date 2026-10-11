@@ -24,7 +24,8 @@ call is real.
            per PDF in the pdf service's cover cache, each in library.json
   restart  the same home again: the library, the titles, the page a PDF was
            left at, a PDF placed as files.import leaves one (`Imported
-           PDF.pdf`), and every current cover kept, not drawn again
+           PDF.pdf`), every current cover kept, not drawn again, and a PDF
+           removed from Home taking its cover with it
   full     storage with no room left: the engine's refusal, then a removal
   empty    no PDFs: the empty library and "Open a PDF from this device" (a
            hidden window never has focus, so the files service refuses the
@@ -1025,6 +1026,31 @@ def restart(app, out):
     app.find("2 / 4", "Label", timeout=60)  # where the shell run left it
     app.images(1)
     app.grab(out, "r03-place-kept")
+    # Remove deletes the PDF's kept cover with it.
+    app.tap("Open", "Button")
+    name = "Quarterly report combined.pdf"
+    index = json.loads((SHELL_JAIL / "accounts/device/library.json").read_text())["docs"]
+    cover = index.get(name, {}).get("cover", "")
+    assert cover.startswith(".cache/covers/") and (SHELL_JAIL / cover).is_file(), f"{name} has no kept cover: {index.get(name)}"
+    remove_card(app, name)
+    wait_until(lambda: not (SHELL_JAIL / cover).exists(), "Remove left the PDF's cover behind")
+    assert not (SHELL_JAIL / LIBRARY / name).exists(), "Remove left the PDF behind"
+    app.grab(out, "r04-removed")
+    RECEIPT["removed_with_its_cover"] = {"pdf": name, "cover": cover}
+
+
+def remove_card(app, name):
+    """Remove `name` from Home with its card's trash button, and confirm."""
+    app.reveal(name)
+    lx, ly, lw, lh = app.find(name, "Label")["r"]
+    trash = [w["r"] for w in app.widgets() if w["ty"] in ("Button", "ButtonFlat") and not w.get("t") and w["r"][2] < 30
+             and lx - 10 <= w["r"][0] <= lx + 300 and ly <= w["r"][1] <= ly + 90]
+    assert trash, f"no remove button on {name}'s card"
+    bx, by, bw, bh = sorted(trash, key=lambda r: r[1])[0]
+    app.click(bx + bw / 2, by + bh / 2)
+    app.find("Remove it from PDF Tools' storage?", "Label")
+    app.tap("Remove", "Button")
+    app.find("from PDF Tools.", "Label", exact=False, timeout=20)
 
 
 def full(app, out):
@@ -1186,7 +1212,8 @@ def shell_runs(args, runs):
                 # The restart drew no current cover again: same files, same
                 # times. (A PDF saved after Home last drew its cover has none
                 # in library.json, and is drawn again.)
-                current = {name: at for name, at in kept.items() if ".cache/covers/" + name in named}
+                removed = RECEIPT.get("removed_with_its_cover", {}).get("cover", "")
+                current = {name: at for name, at in kept.items() if ".cache/covers/" + name in named and ".cache/covers/" + name != removed}
                 again = covers_kept(SHELL_JAIL)
                 redrawn = [name for name, at in current.items() if again.get(name) != at]
                 assert current and not redrawn, f"covers drawn again after the restart: {redrawn}"
