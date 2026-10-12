@@ -9,7 +9,9 @@ publish = false
 wasmtime = { workspace = true }
 wasmtime-wasi = { workspace = true }
 wasmtime-wasi-http = { workspace = true }
-# The requests a component's `wasi:http` sends, checked against its hosts.
+tokio = { workspace = true }
+url = { workspace = true }
+# Outgoing WASI HTTP requests; network destinations are not allowlisted.
 http = "1"
 http-body-util = "0.1"
 # Wasmtime's default HTTPS client uses Rustls's process provider. Other shell

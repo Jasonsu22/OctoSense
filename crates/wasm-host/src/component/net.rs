@@ -3,9 +3,8 @@
 //! An app's network declarations (`net`, `network.hosts`) are shown when it
 //! is installed, not enforced while it runs: the architecture ruling of
 //! 8 October 2026 removes the per-app runtime gates, and the OS and the
-//! host's API surface are the boundary. (The app's Splash script still
-//! passes the Splash runtime's URL gate until the Makepad fork drops it; a
-//! component never gets one.)
+//! host's API surface are the boundary. The same disclosure rule applies
+//! to the app's Splash requests and its component's ordinary WASI sockets.
 //!
 //! What the runtime still owes the call: a request waits for the network
 //! outside the guest, where the deadline's epoch check cannot end it, so

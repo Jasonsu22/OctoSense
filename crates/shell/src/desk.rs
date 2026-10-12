@@ -401,6 +401,16 @@ pub struct WmState {
     /// frame, and every tile snaps to the layout like a dragged one — a
     /// tween on top of the slide would lag it (see `dragging`).
     pub pane_sliding: bool,
+    /// The shell's own window is full screen on its host: macOS's
+    /// full-screen space, a maximized Wayland window, a KMS desk. A floating
+    /// dock then hides below the bottom edge until the pointer comes to it,
+    /// as macOS's Dock does beside a full-screen app
+    /// (`desktop::dock_auto_hides`); in a window it always shows.
+    pub host_fullscreen: bool,
+    /// How far up the dock is: 1 in place, 0 hidden below the bottom edge.
+    /// Always 1 unless `host_fullscreen` hides it. The shelf moves it, and
+    /// the shelf and the desk's dock backdrop read it in the same frame.
+    pub dock_reveal: f64,
 }
 
 impl WmState {
@@ -1926,9 +1936,12 @@ impl Widget for WmDesk {
             // its blur footprint it can share an earlier terminal checkpoint.
             let size = cx.owning_window_or_root_pass_size();
             let dock = if self.style.share(|s| s.glass_shelf) > 0.001 {
-                // As deep as whichever pill samples it.
+                // As deep as whichever pill samples it. A dock hidden below
+                // the edge samples nothing.
                 let level = crate::desktop::dock_backdrop_level(&self.style, &self.shell_draw.material());
-                scope.data.get_mut::<WmState>().map(|state| (crate::desktop::dock_bounds(state, size), level))
+                scope.data.get_mut::<WmState>()
+                    .filter(|state| crate::desktop::dock_showing(state))
+                    .map(|state| (crate::desktop::dock_bounds(state, size), level))
             } else { None };
             let (snapshot, stacks, passes) = self.compositor.as_mut().unwrap().finish(cx, self.desk_rect, dock);
             if self.blur_counts != (stacks, passes) {

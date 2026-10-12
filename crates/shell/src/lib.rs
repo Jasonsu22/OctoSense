@@ -19,6 +19,7 @@ pub mod ai_bus;
 pub mod app_chat;
 pub mod app_storage;
 pub mod dev_mode;
+pub mod launch_input;
 pub mod approvals;
 pub mod apps;
 pub mod binds;
@@ -76,6 +77,8 @@ mod maps_model_tests;
 #[cfg(test)]
 mod pdftools_model_tests;
 #[cfg(test)]
+mod quickdeck_model_tests;
+#[cfg(test)]
 mod system_app_theme_tests;
 #[cfg(test)]
 mod writer_model_tests;
@@ -95,6 +98,8 @@ pub mod wm_reply;
 pub mod ext;
 pub mod glance;
 pub mod glance_card;
+pub mod studio;
+use studio::Renderer as StudioRenderer;
 mod glance_style;
 pub mod glance_chat;
 pub mod mail_card;
@@ -553,6 +558,9 @@ pub struct App {
     /// at without a screen (the GPU readback does not need one).
     #[rust]
     pub test_capture: Option<(Timer, std::path::PathBuf)>,
+    #[rust] pub studio: StudioRenderer,
+    #[rust] pub studio_clients: HashMap<String, ClientId>,
+    #[rust] pub studio_registry_generation: u64,
     #[rust] pub test_capture_ticket: Option<ReadbackTicket>,
     #[rust] pub test_recording: bool,
     /// `--test-action page:<n>`: the home page to jump to, once the phone
@@ -560,6 +568,9 @@ pub struct App {
     #[rust]
     pub test_page: Option<(Timer, i64)>,
     #[rust] pub test_glance_fixtures: Option<(Timer, String)>,
+    /// `--test-action host-fullscreen`: behave as if the window were full
+    /// screen on its host, which a hidden run cannot enter.
+    #[rust] test_host_fullscreen: bool,
     /// The hidden WebView that renders pages for the octos reader where
     /// there is no Chrome (the phone): serves `webview_render::renderer`.
     #[rust]
@@ -711,6 +722,34 @@ pub struct DividerDrag {
 }
 
 impl App {
+    #[cfg(all(unix, any(feature = "app-hub", native_mobile)))]
+    fn drain_studio(&mut self, cx: &mut Cx) {
+        for instance in studio::apps::take_closes() {
+            if let Some(client) = self.studio_clients.remove(&instance) {
+                self.close_client(cx, client, false);
+            }
+        }
+        for instance in studio::apps::take_launches() {
+            let Some((app_id, title)) = studio::apps::launch_info(&instance) else { continue };
+            let app = apps::studio_row(app_id.unwrap_or_else(|| format!("studio-instance:{instance}")),
+                title, vec![format!("--studio-instance={instance}")]);
+            let client = self.next_id;
+            self.launch_module_as(cx, &studio::module::STUDIO_MODULE, &app);
+            if self.state.as_ref().is_some_and(|state| state.clients.contains_key(&client)) {
+                self.studio_clients.insert(instance, client);
+            } else {
+                studio::apps::shutdown(cx, &instance);
+            }
+        }
+        let generation = host_tools::studio_bundles::generation();
+        if generation != self.studio_registry_generation {
+            self.studio_registry_generation = generation;
+            shell::launcher::invalidate_apps();
+            self.redraw_all(cx);
+        }
+    }
+
+
     fn desk(&self, cx: &mut Cx) -> WidgetRef {
         self.ui.widget(cx, ids!(desk))
     }
@@ -734,6 +773,18 @@ impl App {
 
     pub fn state_mut(&mut self) -> &mut WmState {
         self.state.as_mut().expect("state after startup")
+    }
+
+    /// How many points of the work area `area`'s bottom the dock covers
+    /// (`desktop::dock_overlay`): a window that asks for its own size ends
+    /// above it. Before the desk's first draw, on `desk_area`'s fallback
+    /// desk, 860 points tall from the window's top.
+    fn dock_overlay(&self, cx: &mut Cx, area: LRect) -> f64 {
+        let rect = self.desk(cx).borrow_mut::<WmDesk>().map(|d| d.desk_rect).unwrap_or_default();
+        let desk_bottom = if rect.size.x > 1.0 { rect.pos.y + rect.size.y } else { 860.0 };
+        // A dock that hides covers nothing a window keeps clear of.
+        self.state.as_ref().filter(|s| !desktop::dock_auto_hides(s))
+            .map_or(0.0, |s| desktop::dock_overlay(&s.style, desk_bottom, area.y + area.h))
     }
 
     fn desk_area(&self, cx: &mut Cx) -> LRect {
@@ -836,6 +887,14 @@ impl App {
                 self.activate_client(cx, client);
                 return;
             }
+        }
+
+        #[cfg(all(unix, any(feature = "app-hub", native_mobile)))]
+        if app.bin == "studio-app" && cfg!(dev_mode) {
+            if let Err(error) = host_tools::studio_bundles::request_launch_installed(&app.id) {
+                self.notify(cx, "Could not open developer app", &error);
+            }
+            return;
         }
 
         // In-process hosting (aicontrol §3): a linked module the person
@@ -2010,6 +2069,7 @@ impl App {
     }
 
     fn remove_client(&mut self, cx: &mut Cx, client: ClientId) {
+        self.studio_clients.retain(|_, id| *id != client);
         log!("wm: removing client {}", client);
         peer_link::process_gone(client);
         self.process_close.gone(client);
@@ -2627,11 +2687,23 @@ impl App {
             Some(instance) => (instance.manifest(), instance.root.clone(), instance.vm_id),
             None => return,
         };
-        self.state_mut()
-            .clients
-            .insert(id, clients::ClientSlot::module(id, &app.id, &app.label));
+        let mut slot = clients::ClientSlot::module(id, &app.id, &app.label);
+        // Host services know a script app in front by its manifest id.
+        slot.card_app = apps::card_manifest_id(app).map(str::to_owned);
+        self.state_mut().clients.insert(id, slot);
         let gap = self.state_mut().gap;
-        self.state_mut().layout.insert(id, area, gap);
+        // A script app may ask its desktop window to open at a size (its
+        // manifest's `window`), which the desk clamps; without one, or for
+        // any other module, the default size. Phones ignore it: their apps
+        // are full-screen.
+        // It ends above a dock that floats over the desk.
+        let preferred = if self.state_mut().style.target.mobile() { None } else { apps::window_hint(cx, app) };
+        let dock = if preferred.is_some() { self.dock_overlay(cx, area) } else { 0.0 };
+        self.state_mut().layout.insert_sized(id, area, gap, preferred, dock);
+        if let (Some((w, h)), Some(window)) = (preferred, self.state_mut().layout.desktop.get(id)) {
+            log!("wm: {} asks for a {}x{} window; it opens at {}x{} (the dock covers {} points of the desk)",
+                app.id, w, h, window.rect.w, window.rect.h, dock);
+        }
         // The tile is a module tile from its first draw; the root is seated
         // in it before anything asks it to draw.
         self.desk(cx).borrow_mut::<WmDesk>().map(|mut d| {
@@ -2820,7 +2892,7 @@ impl App {
             let existing = |this: &Self, key: LiveId| this.module_windows.iter()
                 .find(|(_, (o, k))| *o == owner && *k == key).map(|(w, _)| *w);
             match request {
-                WindowRequest::Open { key, title, root, size: _ } => {
+                WindowRequest::Open { key, title, root, size } => {
                     if let Some(window) = existing(self, key) {
                         self.activate_client(cx, window);
                         continue;
@@ -2828,9 +2900,25 @@ impl App {
                     let id = self.next_id;
                     self.next_id += 1;
                     let area = self.desk_area(cx);
-                    self.state_mut().clients.insert(id, clients::ClientSlot::module(id, app, &title));
+                    let mut slot = clients::ClientSlot::module(id, app, &title);
+                    // An instance's extra window is its app in front too.
+                    slot.card_app = self.state.as_ref().and_then(|s| s.clients.get(&owner)).and_then(|o| o.card_app.clone());
+                    self.state_mut().clients.insert(id, slot);
                     let gap = self.state_mut().gap;
-                    self.state_mut().layout.insert(id, area, gap);
+                    // The size the module asks for is a hint, clamped as a
+                    // script app's manifest `window` is (above a dock that
+                    // floats over the desk); none, or a size that is not
+                    // one, is the default. A phone shows no extra windows.
+                    let preferred = if self.state_mut().style.target.mobile() {
+                        None
+                    } else {
+                        desktop_layout::requested_size(size.map(|s| (s.x, s.y)))
+                    };
+                    let dock = if preferred.is_some() { self.dock_overlay(cx, area) } else { 0.0 };
+                    self.state_mut().layout.insert_sized(id, area, gap, preferred, dock);
+                    if let (Some((w, h)), Some(window)) = (preferred, self.state_mut().layout.desktop.get(id)) {
+                        log!("wm: {} asks for a {}x{} window {:?}; it opens at {}x{}", app, w, h, title, window.rect.w, window.rect.h);
+                    }
                     self.desk(cx).borrow_mut::<WmDesk>().map(|mut d| {
                         d.mark_module(id);
                         d.with_module_view(cx, id, |cx, v| v.set_root(cx, id, vm_id, root));
@@ -3516,6 +3604,7 @@ impl App {
         self.pane_links.reannounce();
         // App peers take `dev.run` and developer grants, or lose them.
         crate::host_tools::developer_mode_changed();
+        shell::launcher::invalidate_apps();
         for notice in dev_mode::take_notices() {
             self.notify(cx, "Developer mode", &notice);
         }
@@ -4966,17 +5055,18 @@ impl App {
             let rect = if resize {
                 // The grabbed corner moves with the pointer; the opposite
                 // one is fixed (DragController.cpp:413-423).
+                use crate::desktop_layout::{MIN_H, MIN_W};
                 let (x, w) = if !resize_x {(start_rect.x,start_rect.w)}else if grab_left {
-                    let w = (start_rect.w - d.x).max(80.0);
+                    let w = (start_rect.w - d.x).max(MIN_W);
                     (start_rect.x + start_rect.w - w, w)
                 } else {
-                    (start_rect.x, (start_rect.w + d.x).max(80.0))
+                    (start_rect.x, (start_rect.w + d.x).max(MIN_W))
                 };
                 let (y, h) = if !resize_y {(start_rect.y,start_rect.h)}else if grab_top {
-                    let h = (start_rect.h - d.y).max(60.0);
+                    let h = (start_rect.h - d.y).max(MIN_H);
                     (start_rect.y + start_rect.h - h, h)
                 } else {
-                    (start_rect.y, (start_rect.h + d.y).max(60.0))
+                    (start_rect.y, (start_rect.h + d.y).max(MIN_H))
                 };
                 LRect::new(x, y, w, h)
             } else {
@@ -5246,22 +5336,17 @@ impl App {
         self.handle_event(cx, &event);
     }
 
-    /// The test actions' timers: a `capture:` tick writes the next frame; a
-    /// due `ask-appcard:` sends its text to the appcard instance's executor
-    /// exactly as the assistant's `ask` call would.
-    fn fire_test_timers(&mut self, cx: &mut Cx, te: &TimerEvent) {
-        if let Some((timer, path)) = self.test_capture.clone() {
-            if timer.is_timer(te).is_some() {
-                #[cfg(not(target_os = "android"))]
-                {
-                    let tmp = path.with_extension("part.png");
-                    cx.capture_next_frame_to_file(tmp);
-                    let _ = std::fs::rename(path.with_extension("part.png"), path);
-                }
-                #[cfg(target_os = "android")]
-                {
-                    for result in cx.try_take_texture_readbacks() {
-                        if Some(result.ticket) != self.test_capture_ticket { continue; }
+    /// One consumer drains the platform queue; a test capture cannot discard
+    /// Studio's ticket (or vice versa). Cancelled unowned tickets are drained
+    /// too, releasing their platform readback reservation.
+    fn route_texture_readbacks(&mut self, cx: &mut Cx) {
+        for result in cx.try_take_texture_readbacks() {
+            let Some(result) = self.studio.readback(cx, result) else {continue};
+            #[cfg(all(unix, any(feature = "app-hub", native_mobile)))]
+            let Some(result) = studio::apps::readback(cx, result) else {continue};
+            #[cfg(target_os = "android")]
+            if Some(result.ticket) == self.test_capture_ticket {
+                let Some((_, path)) = self.test_capture.clone() else {continue};
                         self.test_capture_ticket = None;
                         let output = if self.test_recording {
                             let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
@@ -5284,7 +5369,26 @@ impl App {
                                 if std::fs::write(&tmp,png).is_ok() { let _ = std::fs::rename(tmp,output); }
                             }
                         }) { Ok(task) => task.detach(), Err(error) => log!("wm: capture worker unavailable: {error}") }
-                    }
+            }
+            #[cfg(not(target_os = "android"))]
+            let _ = result;
+        }
+    }
+
+    /// The test actions' timers: a `capture:` tick writes the next frame; a
+    /// due `ask-appcard:` sends its text to the appcard instance's executor
+    /// exactly as the assistant's `ask` call would.
+    fn fire_test_timers(&mut self, cx: &mut Cx, te: &TimerEvent) {
+        if let Some((timer, _path)) = self.test_capture.clone() {
+            if timer.is_timer(te).is_some() {
+                #[cfg(not(target_os = "android"))]
+                {
+                    let tmp = _path.with_extension("part.png");
+                    cx.capture_next_frame_to_file(tmp);
+                    let _ = std::fs::rename(_path.with_extension("part.png"), _path);
+                }
+                #[cfg(target_os = "android")]
+                {
                     if self.test_capture_ticket.is_none() {
                         let focus = self.state_mut().layout.focused_client();
                         let texture = focus.and_then(|client|self.desk(cx).borrow::<WmDesk>().and_then(|desk|desk.phone_client_texture(client)));
@@ -5342,17 +5446,14 @@ impl App {
 
     /// `--test-action <name>` fires one WmAction at startup, so every
     /// binding can be driven from a script even where the host OS keeps a
-    /// chord for itself.
+    /// chord for itself. Command-line flags, which only the local user can
+    /// pass, work in every build. The app config's `test_actions` arrive
+    /// with a launch that another app may have made (an Android intent
+    /// extra), so only a development build takes them (`launch_input`).
     fn run_test_actions(&mut self, cx: &mut Cx) {
         let mut args: Vec<String> = std::env::args().collect();
-        if let Ok(config) = std::env::var("MAKEPAD_APP_CONFIG") {
-            if let Ok(config) = makepad_strict_json::parse(config.as_bytes()) {
-                if let Some(actions) = config.get("test_actions").and_then(|v| v.as_arr()) {
-                    for action in actions.iter().filter_map(|v| v.as_str()) {
-                        args.extend(["--test-action".into(), action.into()]);
-                    }
-                }
-            }
+        for action in launch_input::test_actions() {
+            args.extend(["--test-action".into(), action]);
         }
         let mut i = 0;
         while i < args.len() {
@@ -5402,10 +5503,39 @@ impl App {
                         i += 2;
                         continue;
                     }
+                    // host-fullscreen: the shell behaves as if its window were
+                    // full screen on its host (a hidden run cannot enter one),
+                    // so a floating dock hides until the pointer comes to the
+                    // bottom edge (`desktop::dock_auto_hides`).
+                    if name == "host-fullscreen" {
+                        log!("wm: --test-action host-fullscreen");
+                        self.test_host_fullscreen = true;
+                        if let Some(state) = self.state.as_mut() {
+                            state.host_fullscreen = true;
+                        }
+                        self.redraw_all(cx);
+                        i += 2;
+                        continue;
+                    }
                     if let Some(app) = name.strip_prefix("launch-") {
                         let app = app.to_string();
                         log!("wm: --test-action launch {}", app);
                         self.launch_app(cx, &app);
+                        i += 2;
+                        continue;
+                    }
+                    #[cfg(unix)]
+                    if let Some(path) = name.strip_prefix("studio-render:") {
+                        // Development builds only: a release build has no studio.
+                        let result = if cfg!(dev_mode) { host_tools::studio::test_action(path) } else { Err("not a development build".to_string()) };
+                        if let Err(error) = result { log!("studio test: {error}"); }
+                        i += 2;
+                        continue;
+                    }
+                    #[cfg(all(unix, any(feature = "app-hub", native_mobile)))]
+                    if let Some(path) = name.strip_prefix("studio-flow:") {
+                        let result = if cfg!(dev_mode) { host_tools::studio::test_flow(path) } else { Err("not a development build".to_string()) };
+                        if let Err(error) = result { log!("studio flow: {error}"); }
                         i += 2;
                         continue;
                     }
@@ -5866,6 +5996,8 @@ mod app_hub_lifecycle_tests {
             dragging: Vec::new(),
             drop_hint: None,
             pane_sliding: false,
+            host_fullscreen: false,
+            dock_reveal: 1.0,
         });
         // Real module isolates exercise shutdown and client removal without
         // requiring a downloaded Card or changing the machine's catalog.
@@ -6010,6 +6142,8 @@ impl MatchEvent for App {
             dragging: Vec::new(),
             drop_hint: None,
             pane_sliding: false,
+            host_fullscreen: false,
+            dock_reveal: 1.0,
             style: Default::default(),
             material,
             roles,
@@ -6018,6 +6152,8 @@ impl MatchEvent for App {
         // the one path a style switch uses.
         self.apply_material_to_chrome(cx, material, None);
         self.next_id = 1;
+        #[cfg(any(feature = "app-updater", native_mobile))]
+        octosense_updater_ui::configure(crate::octosense::paths::home().join("updates"));
         // The hosting registry: the linked modules, the person's overrides
         // in ~/.makepad/wm/apps.splash, a dev run's `--module <id>` flags.
         let args: Vec<String> = std::env::args().collect();
@@ -6332,6 +6468,10 @@ impl MatchEvent for App {
                 #[cfg(wasm_functions)]
                 wasm_service::warm(&id);
             }
+            #[cfg(all(unix, any(feature = "app-hub", native_mobile)))]
+            if cfg!(dev_mode) {
+                self.drain_studio(cx);
+            }
             self.drain_hub(cx);
             self.drain_client_lines(cx);
             self.drain_module_upstream();
@@ -6436,6 +6576,10 @@ impl App {
     }
 
     pub fn shell_handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        #[cfg(any(feature = "app-updater", native_mobile))]
+        if let Event::AndroidIntegration { channel, payload } = event {
+            if channel == "home_updater.result" { octosense_updater_ui::android_result(payload); }
+        }
         #[cfg(any(feature = "app-hub", native_mobile))]
         self.audio_session_event(cx, event);
         #[cfg(any(feature = "app-hub", native_mobile))]
@@ -6446,6 +6590,10 @@ impl App {
         device_calendar::handle_event(cx, event);
         self.webview_render.handle_event(cx, event);
         self.shell_handle_event_inner(cx, event);
+        // Studio is independent of modal/phone routes that may consume an event.
+        if cfg!(dev_mode) {
+            if let Event::Draw(draw) = event { self.studio.draw(cx, draw); }
+        }
         // A switch or Home action must stop device access in this event, not
         // wait for the newly focused app's next draw.
         #[cfg(any(feature = "app-hub", native_mobile))]
@@ -6486,10 +6634,9 @@ impl App {
             } else {
                 state.layout.focused_client()?
             };
-            let app = &state.clients.get(&client)?.app;
-            // Hosted Hub previews have no dedicated client identity. They
-            // must open the installed app before requesting native audio.
-            app.strip_prefix("hub:").map(str::to_owned)
+            // A system app in front is its manifest id as much as an
+            // installed one; a hosted Hub preview is none (`foreground_app`).
+            state.clients.get(&client)?.foreground_app()
         });
         let foreground = glance.or(focused);
         files_service::set_foreground_app(foreground.clone());
@@ -6498,6 +6645,13 @@ impl App {
     }
 
     fn shell_handle_event_inner(&mut self, cx: &mut Cx, event: &Event) {
+        if cfg!(dev_mode) {
+            #[cfg(all(unix, any(feature = "app-hub", native_mobile)))]
+            studio::apps::tick(cx, event);
+            let studio_surface = studio::surface_geometry(cx);
+            self.studio.event(cx, event, studio_surface);
+        }
+        self.route_texture_readbacks(cx);
         // Quitting, or closing the shell's window, asks the hosted instances
         // first (makepad#65). A termination signal is never refused.
         match event {
@@ -6559,6 +6713,13 @@ impl App {
             }
             // The bar is the caption: keep it around the OS buttons.
             self.update_bar_chrome(cx, &ev.new_geom);
+            // A full-screen shell hides its floating dock until the pointer
+            // comes to the bottom edge (`desktop::dock_auto_hides`).
+            let fullscreen = ev.new_geom.is_fullscreen || self.test_host_fullscreen;
+            if self.state.as_ref().is_some_and(|s| s.host_fullscreen != fullscreen) {
+                self.state_mut().host_fullscreen = fullscreen;
+                self.redraw_all(cx);
+            }
             // A warm instance is configured with the desktop's own dpi, so
             // what it warms up is what its tile will use.
             self.dpi_factor = ev.new_geom.dpi_factor;
@@ -6681,6 +6842,11 @@ impl App {
         if let Event::Draw(_) = event {
             if self.state.is_some() {
                 self.sync_ai_pane_geometry(cx);
+                // Maximized and snapped windows end above a floating dock:
+                // its height from `dock_overlay`, the one lookup for it.
+                let area = self.desk_area(cx);
+                let dock = self.dock_overlay(cx, area);
+                self.state_mut().layout.desktop.dock = dock;
             }
         }
         // SUPER + mouse:272 / mouse:273 — move and resize (tiling.lua).
