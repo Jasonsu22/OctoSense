@@ -623,6 +623,56 @@ fn fields_fill_and_fill_and_sign() {
     coded(&w.err("fill_sign", json!({"doc": lease, "page": 1, "kind": "check"})), "invalid");
 }
 
+/// A 4 × 4 PNG: an image signature the engine would read.
+const SIGNATURE_PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x08, 0x06, 0x00, 0x00, 0x00, 0xa9, 0xf1, 0x9e,
+    0x7e, 0x00, 0x00, 0x00, 0x12, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x10, 0x50, 0x68, 0xf8,
+    0x8f, 0x8c, 0x19, 0x48, 0x17, 0x00, 0x00, 0x7a, 0xe9, 0x1a, 0xf1, 0x2c, 0xd2, 0xc2, 0x5d, 0x00,
+    0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
+/// Since the engine's upstream sync, `fill_sign_add` reads an image
+/// signature or initials from the file its `path` names (`file` in
+/// skill/safety.json). `pdf.fill_sign` never lets a caller name one: `path`,
+/// and the command's other new keys `format` and `language`, are refused
+/// before any engine work, whatever the kind; the service builds the
+/// command's arguments itself.
+#[test]
+fn fill_sign_never_reads_a_file() {
+    let w = World::new().samples();
+    w.put("sig.png", SIGNATURE_PNG);
+    // The engine itself reads the file `path` names into the document.
+    let mut engine = Automation::new().with_root(&w.root).unwrap();
+    let (d, _) = open(&mut engine, "Apartment lease.pdf").unwrap();
+    run(&mut engine, "fill_sign_add", &json!({"doc": d, "page": 1, "type": "signature", "at": [60, 300], "path": "sig.png"})).unwrap();
+    let listed = run(&mut engine, "comment_list", &json!({"doc": d})).unwrap();
+    assert_eq!(listed["comments"].as_array().map(Vec::len), Some(1), "the engine placed the image: {listed}");
+
+    // Through the service, none of those keys gets through.
+    let doc = w.open("Apartment lease.pdf");
+    for (kind, extra) in [
+        ("initials", json!({"path": "sig.png"})),
+        ("initials", json!({"text": "SR", "path": "sig.png"})),
+        ("text", json!({"text": "Sam Rivera", "path": "sig.png"})),
+        ("signature", json!({"path": "sig.png"})),
+        ("check", json!({"path": "sig.png"})),
+        ("date", json!({"format": "yyyy-mm-dd"})),
+        ("date", json!({"language": "de"})),
+    ] {
+        let mut args = json!({"doc": doc, "page": 1, "kind": kind, "at": [60, 300]});
+        args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let e = w.err("fill_sign", args.clone());
+        coded(&e, "invalid");
+        assert!(e.contains("is not one of them"), "{args}: {e}");
+    }
+    assert_eq!(w.ok("comments", json!({"doc": doc}))["comments"], json!([]), "nothing reached the document");
+    assert_eq!(w.ok("state", json!({"doc": doc}))["edited"], false);
+    // Without them, initials are typed, as before.
+    assert_eq!(w.ok("fill_sign", json!({"doc": doc, "page": 1, "kind": "initials", "at": [60, 300], "text": "SR"})), json!({"added": true}));
+    assert_eq!(w.ok("comments", json!({"doc": doc}))["comments"].as_array().map(Vec::len), Some(1));
+}
+
 /// `pdf.fields` marks a read-only field, and `pdf.fill` refuses one as
 /// `invalid:` before the engine sees the call: nothing of it is filled.
 #[test]
@@ -876,6 +926,189 @@ fn a_paragraph_takes_an_alignment_and_a_colour() {
         assert!(e.contains(&format!("`{key}` is not one of them")), "{e}");
     }
     assert_eq!(w.ok("state", json!({"doc": doc})), edits, "the refusals reached nothing");
+}
+
+// ------------------------------------------------------------ edits on a page as a browser prints it
+
+/// The page `fixture::printed_flyer` writes, open (its handle), with a
+/// paragraph's number by its text.
+fn flyer() -> (World, String) {
+    let w = World::new();
+    w.put("flyer.pdf", &fixture::printed_flyer());
+    let doc = w.open("flyer.pdf");
+    (w, doc)
+}
+
+/// Two `[x, y, w, h]` answers within rounding (each is rounded to 1/100 pt
+/// on its own).
+fn same_box(a: &Json, b: &Json) -> bool {
+    xywh4(a).iter().zip(xywh4(b)).all(|(x, y)| (x - y).abs() < 0.025)
+}
+
+fn paragraph_n(w: &World, doc: &str, text: &str) -> Json {
+    let lines = w.ok("lines", json!({"doc": doc, "page": 1}));
+    lines["paragraphs"].as_array().unwrap().iter().find(|p| p["text"] == text).unwrap_or_else(|| panic!("no paragraph {text:?}: {lines}"))["n"].clone()
+}
+
+/// The engine reads a title a browser printed in pieces as one paragraph a
+/// piece, in fonts it can't type most text in: what PDF Tools' Edit must be
+/// honest about. (The pieces, the fonts and the joined Chinese lines are the
+/// engine's own reading, at the pinned revision.)
+#[test]
+fn a_printed_title_reads_as_pieces_in_subset_fonts() {
+    let (w, doc) = flyer();
+    let lines = w.ok("lines", json!({"doc": doc, "page": 1}));
+    let paragraphs: Vec<(String, String)> = lines["paragraphs"].as_array().unwrap().iter().map(|p| (p["text"].as_str().unwrap().to_string(), p["font"].as_str().unwrap().to_string())).collect();
+    let text: Vec<&str> = paragraphs.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(
+        text,
+        [
+            "OctoSense sample - a page as a web browser prints it",
+            "Studio2026",
+            "春",
+            "季",
+            "发布",
+            "会",
+            "春季发布会展示新的应用和工具 报名截止 2026 年 4 月 30 日",
+            "Doors open at nine in the main hall. Bring a laptop and the badge we send you by email.",
+        ],
+        "{lines}"
+    );
+    for (t, font) in &paragraphs[1..6] {
+        assert_eq!(font, "", "{t}: an unnamed Type 3 font, as a browser embeds one");
+    }
+    assert_eq!(paragraphs[6].1, "ABCDEF+FixtureSans-SC", "an embedded subset");
+    let fonts = w.ok("info", json!({"doc": doc}))["fonts"].clone();
+    let kind = |k: &str| fonts.as_array().unwrap().iter().find(|f| f["kind"] == k).unwrap_or_else(|| panic!("{fonts}")).clone();
+    assert_eq!((kind("Type3")["embedded"].clone(), kind("Type3")["name"].clone()), (json!(true), json!("(unnamed)")), "{fonts}");
+    assert_eq!((kind("Type0")["embedded"].clone(), kind("Type0")["subset"].clone()), (json!(true), json!(true)), "{fonts}");
+}
+
+/// `pdf.edit_check` says what an edit would do before PDF Tools makes it: the
+/// font it would be drawn in, and the room it would take. It changes
+/// nothing.
+#[test]
+fn an_edit_check_says_when_the_font_or_the_room_changes() {
+    let (w, doc) = flyer();
+    let check = |n: &Json, text: &str| w.ok("edit_check", json!({"doc": doc, "page": 1, "paragraph": n, "text": text}));
+    let title = paragraph_n(&w, &doc, "Studio2026");
+    // Its own text, or its own glyphs in another order: its font, its room.
+    let same = check(&title, "Studio2026");
+    assert_eq!((same["keeps_font"].clone(), same["font"].clone(), same["covers"].clone(), same["off_page"].clone()), (json!(true), json!(""), json!(0), json!(false)), "{same}");
+    assert_eq!(xywh4(&same["box"]), [44.62, 97.54, 166.8, 27.8], "{same}");
+    let reordered = check(&title, "2026Studio");
+    assert_eq!((reordered["keeps_font"].clone(), reordered["covers"].clone()), (json!(true), json!(0)), "{reordered}");
+    // Letters the piece's font doesn't have: Helvetica, wider, over 春 and 季.
+    let longer = check(&title, "Studio2026 Beta");
+    assert_eq!((longer["keeps_font"].clone(), longer["font"].clone(), longer["covers"].clone()), (json!(false), json!("Helvetica"), json!(2)), "{longer}");
+    assert!(xywh4(&longer["box"])[2] > 166.8 + 30.0, "{longer}");
+    // A line takes the same check.
+    let line = w.ok("lines", json!({"doc": doc, "page": 1}))["lines"].as_array().unwrap().iter().find(|l| l["text"] == "Studio2026").unwrap()["n"].clone();
+    let by_line = w.ok("edit_check", json!({"doc": doc, "page": 1, "line": line, "text": "Studio2026 Beta"}));
+    assert_eq!((by_line["keeps_font"].clone(), by_line["covers"].clone()), (json!(false), json!(2)), "{by_line}");
+
+    // The Chinese paragraph's embedded subset: its own glyphs keep it…
+    let chinese = paragraph_n(&w, &doc, "春季发布会展示新的应用和工具 报名截止 2026 年 4 月 30 日");
+    let digits = check(&chinese, "2026 4 30");
+    assert_eq!((digits["keeps_font"].clone(), digits["font"].clone(), digits["covers"].clone()), (json!(true), json!("ABCDEF+FixtureSans-SC"), json!(0)), "{digits}");
+    // …Latin letters it lacks don't,
+    let latin = check(&chinese, "Hello world");
+    assert_eq!((latin["keeps_font"].clone(), latin["font"].clone(), latin["covers"].clone()), (json!(false), json!("Helvetica"), json!(0)), "{latin}");
+    // more words wrap into more lines, down over the paragraph below,
+    let more = check(&chinese, &["2026 4 30"; 12].join(" "));
+    assert_eq!((more["keeps_font"].clone(), more["off_page"].clone()), (json!(true), json!(false)), "{more}");
+    assert!(more["covers"].as_u64().unwrap() >= 1, "runs into the Helvetica paragraph: {more}");
+    // and Chinese without spaces never wraps: one line, off the page.
+    let long = check(&chinese, &"春季发布会展示新的应用和工具".repeat(4));
+    assert_eq!((long["keeps_font"].clone(), long["off_page"].clone()), (json!(true), json!(true)), "{long}");
+
+    assert_eq!(w.ok("state", json!({"doc": doc})), json!({"edited": false, "can_undo": false, "can_redo": false, "pages": 1}), "a check changes nothing");
+}
+
+/// What `pdf.edit_check` says is what `pdf.edit_text` then does: the same
+/// font and the same box. It reads the open document as it is, unsaved
+/// edits included, and counts only text an edit newly runs into.
+#[test]
+fn an_edit_check_foretells_the_edit() {
+    let (w, doc) = flyer();
+    let title = paragraph_n(&w, &doc, "Studio2026");
+    let said = w.ok("edit_check", json!({"doc": doc, "page": 1, "paragraph": title, "text": "Studio2026 Beta"}));
+    w.ok("edit_text", json!({"doc": doc, "page": 1, "paragraph": title, "text": "Studio2026 Beta"}));
+    let lines = w.ok("lines", json!({"doc": doc, "page": 1}));
+    let edited = lines["paragraphs"].as_array().unwrap().iter().find(|p| p["text"] == "Studio2026 Beta").unwrap_or_else(|| panic!("{lines}")).clone();
+    assert_eq!(edited["font"], said["font"], "{edited} {said}");
+    assert!(same_box(&edited["box"], &said["box"]), "{edited} {said}");
+    // Checked again, the edited title is in Helvetica now, already over 春
+    // and 季: nothing it newly runs into.
+    let again = w.ok("edit_check", json!({"doc": doc, "page": 1, "paragraph": edited["n"], "text": "Studio2026 Beta"}));
+    assert_eq!((again["keeps_font"].clone(), again["font"].clone(), again["covers"].clone()), (json!(true), json!("Helvetica"), json!(0)), "{again}");
+
+    let chinese = paragraph_n(&w, &doc, "春季发布会展示新的应用和工具 报名截止 2026 年 4 月 30 日");
+    let words = ["2026 4 30"; 12].join(" ");
+    let said = w.ok("edit_check", json!({"doc": doc, "page": 1, "paragraph": chinese, "text": words}));
+    w.ok("edit_text", json!({"doc": doc, "page": 1, "paragraph": chinese, "text": words}));
+    let lines = w.ok("lines", json!({"doc": doc, "page": 1}));
+    let edited = lines["paragraphs"].as_array().unwrap().iter().find(|p| p["text"] == words.as_str()).unwrap_or_else(|| panic!("{lines}")).clone();
+    assert_eq!(edited["font"], said["font"], "{edited} {said}");
+    assert!(same_box(&edited["box"], &said["box"]), "{edited} {said}");
+}
+
+/// Text no font PDF Tools has can show is refused, by the check and the
+/// edit alike, in words for a person, and the page stays as it was.
+#[test]
+fn an_edit_the_engine_refuses_is_refused_in_plain_words() {
+    let (w, doc) = flyer();
+    let piece = paragraph_n(&w, &doc, "季");
+    let chinese = paragraph_n(&w, &doc, "春季发布会展示新的应用和工具 报名截止 2026 年 4 月 30 日");
+    let title = paragraph_n(&w, &doc, "Studio2026");
+    for (n, text, words) in [
+        (&piece, "夏", "invalid: PDF Tools can't edit Chinese, Japanese or Korean text yet."),
+        (&chinese, "春季发布会 Hello", "invalid: PDF Tools can't edit Chinese, Japanese or Korean text yet."),
+        (&chinese, "夏季发布会", "invalid: PDF Tools can't edit Chinese, Japanese or Korean text yet."),
+        (&title, "Привет", "invalid: PDF Tools can't type “П”, “р”, “и”, “в”, “е” and others like them into a PDF yet."),
+        (&json!(99), "x", "invalid: That text isn't on the page any more: click it again."),
+    ] {
+        let args = json!({"doc": doc, "page": 1, "paragraph": n, "text": text});
+        assert_eq!(w.err("edit_check", args.clone()), words, "check {text}");
+        assert_eq!(w.err("edit_text", args), words, "edit {text}");
+    }
+    assert_eq!(w.ok("state", json!({"doc": doc}))["edited"], false, "nothing changed");
+    assert!(w.ok("text", json!({"doc": doc}))["pages"][0]["text"].as_str().unwrap().contains("春季发布会展示新的应用和工具"));
+}
+
+/// A PDF whose security settings forbid changes (PDF Tools takes no
+/// passwords) opens, and an edit says so in plain words.
+#[test]
+fn a_pdf_locked_against_changes_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("plain.pdf"), paragraph_pdf()).unwrap();
+    let mut a = Automation::new().with_root(dir.path()).unwrap();
+    let (id, _) = open(&mut a, "plain.pdf").unwrap();
+    run(&mut a, "doc_protect", &json!({ "doc": id, "permissions_password": "the owner's", "changes": "none" })).unwrap();
+    run(&mut a, "doc_save", &json!({ "doc": id, "path": "locked.pdf" })).unwrap();
+    let w = World::new();
+    w.put("locked.pdf", &std::fs::read(dir.path().join("locked.pdf")).unwrap());
+    let doc = w.open("locked.pdf");
+    let n = w.ok("lines", json!({"doc": doc, "page": 1}))["paragraphs"][1]["n"].clone();
+    let args = json!({"doc": doc, "page": 1, "paragraph": n, "text": "Changed"});
+    let words = "invalid: This PDF's security settings don't allow changes, so PDF Tools can't edit it.";
+    assert_eq!(w.err("edit_check", args.clone()), words);
+    assert_eq!(w.err("edit_text", args), words);
+}
+
+/// A plain PDF in a standard font keeps working as before: an edit keeps the
+/// font and its room.
+#[test]
+fn an_edit_check_on_a_plain_pdf_finds_nothing_to_say() {
+    let w = World::new().samples();
+    let doc = w.open("Apartment lease.pdf");
+    let lines = w.ok("lines", json!({"doc": doc, "page": 1}));
+    let clause = lines["paragraphs"].as_array().unwrap().iter().find(|p| p["text"].as_str().unwrap().starts_with("This agreement is made")).unwrap().clone();
+    let check = w.ok("edit_check", json!({"doc": doc, "page": 1, "paragraph": clause["n"], "text": "This agreement is made between the landlord and the tenant.", "align": "center", "color": "#c01c28"}));
+    assert_eq!((check["keeps_font"].clone(), check["font"].clone(), check["covers"].clone(), check["off_page"].clone()), (json!(true), json!("Times-Roman"), json!(0), json!(false)), "{check}");
+    let b = xywh4(&check["box"]);
+    let was = xywh4(&clause["box"]);
+    assert!(b[1] >= was[1] - 1.0 && b[1] + b[3] <= was[1] + was[3] + 1.0, "within the clause's own lines: {b:?} in {was:?}");
 }
 
 #[test]
@@ -1733,6 +1966,7 @@ fn every_v2_method_refuses_arguments_it_does_not_take() {
         ("pages", json!({"doc": doc, "op": "extract", "pages": [1], "out": "x.pdf", "delete": true})),
         ("pages", json!({"doc": doc, "op": "rotate", "pages": [1], "angle": 90, "subset": "odd"})),
         ("edit_text", json!({"doc": doc, "page": 1, "line": 1, "text": "x", "font": "times"})),
+        ("edit_check", json!({"doc": doc, "page": 1, "line": 1, "text": "x", "size": 20})),
         ("undo", json!({"doc": doc, "steps": 2})),
         ("save", json!({"doc": doc, "full": true})),
         ("export", json!({"doc": doc, "kind": "images", "out_dir": "x", "quality": 50})),
@@ -1777,6 +2011,7 @@ fn timings_on_a_typical_page() {
     time("fill_sign (date)", "fill_sign", json!({"doc": doc, "page": 4, "kind": "date", "at": [60, 300]}));
     time("pages rotate", "pages", json!({"doc": doc, "op": "rotate", "pages": [1], "angle": 90}));
     time("page 1 at 96 dpi, after an edit", "page", json!({"doc": doc, "page": 1}));
+    time("edit_check (a line)", "edit_check", json!({"doc": doc, "page": 2, "line": 1, "text": "Overview"}));
     time("edit_text (a line)", "edit_text", json!({"doc": doc, "page": 2, "line": 1, "text": "Overview"}));
     time("undo", "undo", json!({"doc": doc}));
     time("redo", "redo", json!({"doc": doc}));
@@ -1793,5 +2028,11 @@ fn timings_on_a_typical_page() {
     let big = time("open (112 pages)", "open", json!({"path": "guides.pdf"}))["doc"].clone();
     time("its page 1 at 96 dpi", "page", json!({"doc": big, "page": 1}));
     time("find in 112 pages, first", "find", json!({"doc": big, "query": "garden"}));
+    // A page as a browser prints it: a title in pieces, Chinese in a subset.
+    w.put("flyer.pdf", &fixture::printed_flyer());
+    let flyer = time("open (a printed page)", "open", json!({"path": "flyer.pdf"}))["doc"].clone();
+    time("its lines", "lines", json!({"doc": flyer, "page": 1}));
+    time("edit_check (a title piece)", "edit_check", json!({"doc": flyer, "page": 1, "paragraph": 2, "text": "Studio2026 Beta"}));
+    time("edit_check (the Chinese subset)", "edit_check", json!({"doc": flyer, "page": 1, "paragraph": 7, "text": "2026 4 30"}));
     eprintln!("pdf service timings:\n{}", report.join("\n"));
 }

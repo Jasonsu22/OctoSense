@@ -22,8 +22,16 @@
 //!   format and keystroke scripts, document script and open action would
 //!   each leave a mark, and leave none through the service
 //!   (`doc_tests::a_forms_own_scripts_never_run`).
+//! - `fill_sign_add` is `file` since the engine's upstream sync: a
+//!   signature or initials may be an image, read from the file its `path`
+//!   names. The service builds its arguments itself, from `page`, `kind`
+//!   (one of [`MARKS`], so never `signature`), `at` and, for text and
+//!   initials, `text`; `pdf.fill_sign` refuses any other key (`path`,
+//!   `format`, `language`, `author`…) before any engine work. No parameter
+//!   that names a file ever reaches the command, so it runs as a plain
+//!   document edit (`doc_tests::fill_sign_never_reads_a_file`).
 //! - `comment_list`, `comment_edit`, `comment_delete`, `comment_reply`,
-//!   `comment_set_status`, `form_fields` and `fill_sign_add` are `safe`.
+//!   `comment_set_status` and `form_fields` are `safe`.
 //!
 //! **Dates.** `comment_list` lists a comment's `/M` through pdfcraft-render's
 //! `pretty_date`, which keeps the file's wall clock and drops the zone and

@@ -6,7 +6,7 @@ Shell 将固定版本的 Makepad D3 图表注册到普通 Splash 隔离 VM 中�
 已安装应用及其 Glance 卡片使用同一套图表，同时保留各自的应用身份、存储、
 用户授权和生命周期。图表由 Makepad 原生矢量渲染器绘制，不依赖浏览器或 JavaScript。
 
-这项集成晚于桌面 RC4；RC4 **没有**注册 `d3`。必须使用图表的应用可以在
+[桌面 RC5](https://github.com/OctoSense-org/OctoSense/releases/tag/desktop-v0.1.0-rc.5) 是第一个注册 `d3` 的发布版本；RC4 **没有**注册。[Repo Radar](https://github.com/ymote/octosense-repo-radar) 用 `d3` 绘制 PR 图表，数据由其自带的 Wasm 组件获取，并已在 RC5 上从公开目录安装。必须使用图表的应用可以在
 `"requires":["host-api-v1"]` 之外声明
 `"host_api":{"required":{"charts.d3":1}}`。这是兼容性检查，不是权限。
 `runtime.describe` 将 `charts.d3` 描述为不可通过请求调用的运行时 ABI。

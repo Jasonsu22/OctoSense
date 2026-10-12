@@ -12,9 +12,11 @@
 //!   `open` keeps the engine's document, its edits and undo history,
 //!   between calls under a handle that later calls name as `doc`; `close`,
 //!   `state`, `page`, `find`, `lines`, `comments`, `comment`, `fields`,
-//!   `fill`, `fill_sign`, `pages`, `edit_text`, `undo`, `redo`, `save` and
-//!   `export` work on it, and `info` and `text` take `{doc}` too. Who holds
-//!   an open document, on which thread, and what releases it: [`docs`].
+//!   `fill`, `fill_sign`, `pages`, `edit_text`, `edit_check`, `undo`,
+//!   `redo`, `save` and `export` work on it, and `info` and `text` take
+//!   `{doc}` too. Who holds an open document, on which thread, and what
+//!   releases it: [`docs`]. What an edit would do before it is made (the
+//!   font it would be drawn in, the room it would take): [`fit`].
 //!
 //! **Where a call works** (ADR 0013, 2026-10-08): the caller's own folder,
 //! the [`Area`] the shell's resolver gives it ([`set_area_resolver`]): an
@@ -62,6 +64,7 @@ mod codes;
 mod covers;
 mod dates;
 mod docs;
+mod fit;
 mod reading;
 mod review;
 
@@ -188,6 +191,7 @@ fn dispatch_in(method: &str, args: &Json, cx: &Ctx) -> Result<Json, String> {
         "fill_sign" => review::fill_sign(args, cx),
         "pages" => change::pages(args, cx),
         "edit_text" => change::edit_text(args, cx),
+        "edit_check" => fit::edit_check(args, cx),
         "undo" => change::history(args, cx, false),
         "redo" => change::history(args, cx, true),
         "save" => change::save(args, cx),

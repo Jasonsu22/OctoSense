@@ -2,8 +2,9 @@
 //! `apps/pdftools/bundle/main.splash` (everything between the shared
 //! interface and `start_timeout(`), run in a script VM. They decide what an
 //! imported PDF is called (`files.import` reports the chosen file's name; the
-//! file keeps the name the app gave it) and what the library index keeps
-//! across a restart.
+//! file keeps the name the app gave it), what the library index keeps
+//! across a restart, and what the Edit panel says an edit would do before
+//! Apply (from `pdf.edit_check`).
 use makepad_widgets::*;
 use serde_json::json;
 
@@ -318,4 +319,111 @@ fn read_mode_keeps_the_zoom_the_person_chose() {
     near(kept(1.6, false, "page", 2.0907, 0.6766, 1.0), 0.67, "fit page, on the new canvas");
     near(kept(1.0, false, "width", 5.5, 0.1, 1.0), 4.0, "at most 400%");
     near(kept(1.0, false, "page", 5.5, 0.1, 1.0), 0.25, "at least 25%");
+}
+
+#[test]
+fn a_fonts_name_reads_as_a_person_would_say_it() {
+    let label = |font: &str| pdftools_model(&format!("font_label(\"{font}\").to_json()"));
+    // A subset's tag goes, and so do the engine's hyphens; a browser's Type 3
+    // fonts have no name at all.
+    assert_eq!(label("ABCDEF+Menlo-Regular"), json!("Menlo Regular"));
+    assert_eq!(label("Helvetica-Bold"), json!("Helvetica Bold"));
+    assert_eq!(label("Times-Roman"), json!("Times Roman"));
+    assert_eq!(label("Shippori Mincho Type3"), json!("Shippori Mincho"));
+    assert_eq!(label(""), json!("Unnamed font"));
+    assert_eq!(label("ABCDE+Odd"), json!("ABCDE+Odd"), "five letters are no subset tag");
+    // The Font box: the name and the size (whole sizes here: the script's
+    // numbers are single precision).
+    let font = |name: &str, size: u32| pdftools_model(&format!("font_text({{font: \"{name}\" size: {size}}}).to_json()"));
+    assert_eq!(font("", 28), json!("Unnamed font  ·  28 pt"));
+    assert_eq!(font("ABCDEF+FixtureSans-SC", 0), json!("FixtureSans SC"));
+}
+
+#[test]
+fn the_edit_panel_says_what_an_edit_would_change_before_apply() {
+    // What pdf.edit_check answers, as the panel puts it (the service's own
+    // tests hold the answers to what the engine then does).
+    let risks = |check: &str| pdftools_model(&format!("edit_risks({check}).to_json()"));
+    assert_eq!(risks("nil"), json!([]), "before the check answers, or an engine without it");
+    assert_eq!(risks("{keeps_font: true font: \"\" box: [44.62, 97.54, 166.8, 27.8] covers: 0 off_page: false}"), json!([]));
+    assert_eq!(
+        risks("{keeps_font: false font: \"Helvetica-Bold\" covers: 3 off_page: false}"),
+        json!([
+            "Set in Helvetica Bold: this paragraph's font can't show all of this text.",
+            "Longer than its box: it runs into 3 lines of text nearby."
+        ])
+    );
+    assert_eq!(risks("{keeps_font: true font: \"X\" covers: 1 off_page: true}"), json!(["Longer than its box: it runs into 1 line of text nearby.", "Part of it falls off the page."]));
+    // Apply says so while there is something to say, but not for a refusal
+    // (Apply would only be refused again).
+    let label = |check: &str, error: &str| pdftools_model(&format!("apply_label({{check: {check} check_error: \"{error}\"}}).to_json()"));
+    assert_eq!(label("nil", ""), json!("Apply"));
+    assert_eq!(label("{keeps_font: true covers: 0 off_page: false}", ""), json!("Apply"));
+    assert_eq!(label("{keeps_font: false font: \"Helvetica\" covers: 0 off_page: false}", ""), json!("Apply anyway"));
+    assert_eq!(label("nil", "PDF Tools can't edit Chinese, Japanese or Korean text yet."), json!("Apply"));
+    // A check is for the edit as it stands: its text, alignment and colour.
+    let key = |draft: &str, align: &str, color: &str| pdftools_model(&format!("edit_key({{draft: \"{draft}\" align: \"{align}\" color: {color}}}).to_json()"));
+    assert_eq!(key("Studio", "left", "nil"), json!("Studio\nleft\n"));
+    assert_ne!(key("Studio", "left", "nil"), key("Studio", "center", "nil"));
+    assert_ne!(key("Studio", "left", "nil"), key("Studio", "left", "\"#c01c28\""));
+}
+
+#[test]
+fn a_title_printed_in_pieces_is_counted_as_pieces() {
+    // pdf.lines' paragraphs on the page `--edit-sample` writes (a page as a
+    // web browser prints it): the title in five pieces, one per font, then a
+    // Chinese paragraph and an English one below.
+    let page = r#"[
+        {n: 1 box: [44.62, 75.77, 219.58, 10.51] size: 9.14},
+        {n: 2 box: [44.62, 97.54, 166.8, 27.8] size: 27.8},
+        {n: 3 box: [211.42, 97.54, 27.8, 27.8] size: 27.8},
+        {n: 4 box: [239.22, 97.54, 27.8, 27.8] size: 27.8},
+        {n: 5 box: [267.02, 97.54, 55.6, 27.8] size: 27.8},
+        {n: 6 box: [322.62, 97.54, 27.8, 27.8] size: 27.8},
+        {n: 7 box: [44.62, 150.87, 177.1, 35.15] size: 12.65},
+        {n: 8 box: [44.62, 193.2, 235.55, 30.3] size: 12.0}
+    ]"#;
+    let pieces = |n: u32| pdftools_model(&format!("line_pieces({page}, {n}).to_json()"));
+    for n in 2..=6 {
+        assert_eq!(pieces(n), json!(5), "piece {n} of the title");
+    }
+    for n in [1, 7, 8] {
+        assert_eq!(pieces(n), json!(1), "paragraph {n} is whole");
+    }
+    assert_eq!(pieces(99), json!(1), "a paragraph that isn't there");
+    // Two columns side by side are not one line in pieces.
+    let columns = "[{n: 1 box: [50, 100, 200, 12] size: 10}, {n: 2 box: [300, 100, 200, 12] size: 10}]";
+    assert_eq!(pdftools_model(&format!("line_pieces({columns}, 1).to_json()")), json!(1));
+    assert_eq!(pdftools_model("pieces_note(5).to_json()"), json!("The PDF stores this line in 5 pieces: only this one changes."));
+    assert_eq!(pdftools_model("pieces_note(1).to_json()"), json!(""));
+}
+
+/// The errors the script's parser and tokenizer report for `code`, run in a
+/// bare VM: what runs after them fails there (no widgets, no host), and is
+/// not counted.
+fn parse_errors(code: &str) -> Vec<String> {
+    let mut host = ScriptVmHost::new((), ());
+    let mut vm = ScriptVm {
+        host: &mut host,
+        bx: Box::new(ScriptVmBase::new()),
+    };
+    vm.bx.captured_errors = Some(Vec::new());
+    vm.with_instruction_limit(200_000, |vm| {
+        vm.eval(ScriptMod {
+            file: "pdftools_parse_test.splash".into(),
+            code: format!("use mod.math.*\nuse mod.std.regex\n{code}\n;"),
+            ..Default::default()
+        })
+    });
+    vm.take_errors().into_iter().filter(|e| e.contains("parser.rs") || e.contains("tokenizer.rs")).collect()
+}
+
+#[test]
+fn the_whole_bundle_parses() {
+    // The model tests above run only the functions before `start_timeout(`;
+    // the views and handlers after it are parsed when the app loads, and one
+    // parse error there fails the whole app. The parser reads all of it.
+    assert_eq!(parse_errors(PDF_TOOLS), Vec::<String>::new());
+    // The check itself finds a parse error (a reserved name, as `me` is).
+    assert!(!parse_errors(&format!("{PDF_TOOLS}\nfn broken(){{ let me = 1 }}")).is_empty());
 }
