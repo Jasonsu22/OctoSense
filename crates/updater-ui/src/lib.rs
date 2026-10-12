@@ -29,13 +29,27 @@ static ANDROID: Mutex<Vec<serde_json::Value>> = Mutex::new(Vec::new());
 
 /// The shell supplies a host-private directory, outside every app's storage jail.
 /// Downloads an earlier run opened or left behind are removed off the UI
-/// thread (`octosense_updater::sweep`).
+/// thread (`octosense_updater::sweep`). On macOS the same thread reads an
+/// earlier installation's unseen outcome and removes retained update copies
+/// nothing needs (`restart::startup`).
 pub fn configure(cache: PathBuf) {
     let stale = cache.clone();
     let _ = std::thread::Builder::new()
         .name("octosense-updater-sweep".into())
-        .spawn(move || octosense_updater::sweep(&stale));
+        .spawn(move || {
+            octosense_updater::sweep(&stale);
+            #[cfg(target_os = "macos")]
+            restart::startup(&stale);
+        });
     let _ = CACHE.set(cache);
+}
+
+/// Whether an installation step acts only on real input, Makepad's input
+/// provenance, which a script, a remote control or a synthetic click cannot
+/// produce: Android's install review, and macOS Install & Restart, which
+/// quits OctoSense and replaces it.
+fn requires_real_input(automatic: bool) -> bool {
+    cfg!(target_os = "android") || automatic
 }
 
 /// Android integration packets are consumed by the shell before module dispatch.
@@ -396,8 +410,13 @@ impl UpdaterView {
             return;
         };
         // Android's PackageInstaller requires its own human confirmation as well.
-        if cfg!(target_os = "android") && !tapped {
-            self.message = "Tap Install directly on the phone to review this update.".into();
+        if requires_real_input(automatic) && !tapped {
+            self.message = if automatic {
+                "Click Install & Restart directly to continue."
+            } else {
+                "Tap Install directly on the phone to review this update."
+            }
+            .into();
             return;
         }
         self.message = if automatic { "Preparing the update. OctoSense will ask apps to close before restarting…" }
@@ -730,5 +749,14 @@ impl ServiceExecutor for NoTools {
             &call.call_id,
             "Updates can only be requested in the host-owned Updates window",
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn install_and_restart_acts_only_on_a_real_click() {
+        assert!(super::requires_real_input(true));
+        assert_eq!(super::requires_real_input(false), cfg!(target_os = "android"));
     }
 }

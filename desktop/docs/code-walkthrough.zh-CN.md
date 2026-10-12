@@ -293,7 +293,9 @@ router/composer 和生成卡片，旁边还有 transport/store/render crates。
 `crates/updater-ui` 是不提供代理工具的原生模块。在 macOS 上，其工作线程校验并
 暂存发布包，再把等待中的辅助程序交给 `crates/shell/src/update_restart.rs`。
 shell 请求进程内模块和独立应用退出；取消或未回答的关闭请求不会为更新而强制
-结束应用。只有完成关闭确认才提交辅助程序。旧进程退出后，辅助程序原子交换
-应用包，并以相同配置启动。`crates/updater/src/macos` 确认新版本启动，或恢复
-保留的旧包。[更新器指南](../../docs/updater.zh-CN.md) 说明旧发布的兼容性检查和
-手动恢复途径。
+结束应用。只有完成关闭确认才提交辅助程序。旧进程退出后，辅助程序先按已安装
+应用自身的签名身份检查新应用的代码签名（`crates/updater/src/macos/codesign.rs`，
+使用 Apple 的 Security 框架），再原子交换应用包，并以相同配置启动。
+`crates/updater/src/macos` 确认新版本启动，或恢复保留的旧包；提交之后任何一步
+失败都会重新打开旧应用。[更新器指南](../../docs/updater.zh-CN.md) 说明旧发布的
+兼容性检查和手动恢复途径。

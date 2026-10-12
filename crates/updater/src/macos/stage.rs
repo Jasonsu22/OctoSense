@@ -61,6 +61,10 @@ pub fn prepare(artifact: &VerifiedArtifact, cancellation: &Cancellation) -> Resu
     let dmg = artifact.revalidate().map_err(|e| e.to_string())?;
     let target = current_bundle()?;
     validate_bundle(&target, None)?;
+    // Only code signed with this installation's own identity may replace it.
+    // An unsigned source build is told so before anything is staged; the
+    // helper checks again, independently, before the exchange and launch.
+    let trust = Trust::of_installed(&target)?;
     let version = artifact
         .tag()
         .strip_prefix("desktop-v")
@@ -105,6 +109,9 @@ pub fn prepare(artifact: &VerifiedArtifact, cancellation: &Cancellation) -> Resu
     if digest_tree(&candidate)? != new_digest {
         return Err("The staged app differs from the verified disk image.".into());
     }
+    trust.admit(&candidate).map_err(|reason| {
+        format!("The downloaded app {reason}, so Install & Restart refused it. Use Open installer manually.")
+    })?;
     run(
         Command::new("/usr/bin/hdiutil").arg("detach").arg(&mount),
         cancellation,
@@ -154,10 +161,13 @@ pub fn prepare(artifact: &VerifiedArtifact, cancellation: &Cancellation) -> Resu
         .mode(0o600)
         .open(cache.join(format!("install-{nonce}.log")))
         .map_err(|e| e.to_string())?;
-    let mut child = Command::new(&helper)
-        .arg(&job)
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
+    let mut command = Command::new(&helper);
+    command.arg(&job).env_clear().env("PATH", "/usr/bin:/bin");
+    #[cfg(debug_assertions)]
+    if let Some(value) = std::env::var_os(UNSIGNED_FIXTURES_ENV) {
+        command.env(UNSIGNED_FIXTURES_ENV, value);
+    }
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(log)

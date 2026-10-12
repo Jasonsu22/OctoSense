@@ -31,8 +31,12 @@ impl App {
         #[cfg(all(target_os = "macos", any(feature = "app-updater", native_mobile)))]
         {
             use octosense_updater_ui::restart;
-            if self.state.is_some() && restart::take_rollback_notice() {
-                self.notify(cx, "Update rolled back", "The new version could not start. Your previous app was restored and your profile was kept.");
+            // Once per start: a rollback the helper signalled when it reopened
+            // this app, or a failed or cancelled attempt from an earlier run.
+            if self.state.is_some() {
+                if let Some((title, body)) = restart::take_install_notice() {
+                    self.notify(cx, &title, &body);
+                }
             }
             if self.update_restart_waiting
                 && (!restart::pending()

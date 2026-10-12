@@ -1,12 +1,17 @@
 //! The host owns shutdown. The view can request it, never bypass app vetoes.
 use octosense_updater::macos::Prepared;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Mutex,
+use std::{
+    path::Path,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex, OnceLock,
+    },
 };
 
 static PREPARED: Mutex<Option<Prepared>> = Mutex::new(None);
 static REQUEST: AtomicBool = AtomicBool::new(false);
+static NOTICE: OnceLock<(String, String)> = OnceLock::new();
+static NOTICE_SHOWN: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn request(prepared: Prepared) {
     *PREPARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(prepared);
@@ -34,10 +39,21 @@ pub fn acknowledge_startup() {
     octosense_updater::macos::acknowledge_startup();
 }
 
-/// The helper sets this fixed signal only when it relaunches the previous app.
-/// A failed update should be visible without making the person inspect logs.
-pub fn take_rollback_notice() -> bool {
-    static SEEN: AtomicBool = AtomicBool::new(false);
-    !SEEN.swap(true, Ordering::AcqRel)
-        && std::env::var("OCTOSENSE_UPDATE_ROLLED_BACK").as_deref() == Ok("1")
+/// At startup, on the updater's sweep thread: an earlier installation's
+/// outcome the person has not seen, then removing retained update copies
+/// beside the installed app that nothing needs.
+pub(crate) fn startup(cache: &Path) {
+    if let Some(notice) = octosense_updater::macos::take_install_notice(cache) {
+        let _ = NOTICE.set(notice);
+        makepad_widgets::makepad_platform::thread::SignalToUI::set_ui_signal();
+    }
+    octosense_updater::macos::sweep_backups();
+}
+
+/// A failed, cancelled or rolled-back update, as (title, message), shown once
+/// so it reaches the person without a log. It includes the helper's fixed
+/// rollback signal, set when it reopens the previous app.
+pub fn take_install_notice() -> Option<(String, String)> {
+    let notice = NOTICE.get()?;
+    (!NOTICE_SHOWN.swap(true, Ordering::AcqRel)).then(|| notice.clone())
 }
