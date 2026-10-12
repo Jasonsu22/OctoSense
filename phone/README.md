@@ -101,8 +101,30 @@ Home does not receive privileged ROM services without satisfying their existing
 package/signature checks.
 
 The new build-plan and receipt paths are unit tested and dry-run checked.
-APK and device validation remain separate: [App Studio milestone 1](../docs/adr/0006-app-studio-on-the-phone.md)
-is in progress; the full phone authoring loop is not yet available.
+APK and device validation remain separate. [App Studio milestone 1](../docs/adr/0006-app-studio-on-the-phone.md)
+is merged: a development build gives the `studio.*` tools to the system
+agent, and to an app's own agent for that app alone; the full phone authoring
+loop is not yet available.
+
+**Using App Studio today.** It exists in development builds only (a release
+Home compiles it out), so it takes a developer Home on the phone: build one as
+above, install its Home APK beside the store Home with `adb install`, then turn
+developer mode on in that build (Settings → About phone, tap Build number seven
+times, open Developer options, type `turn on developer mode` and choose Turn
+on). From then on everything happens on the phone. In the system agent's chat,
+ask it to work on an app bundle in its workspace: with the studio tools it
+checks the bundle, opens a live preview, taps and types into it, reads the
+screenshots and the widget tree, fixes the script, installs the app as a
+launcher tile whose state survives a restart, and uninstalls it on request
+([the walkthrough](../docs/architecture-walkthrough.md#follow-app-studio-from-the-agent-to-a-working-app) lists the tools). A computer is needed only to build
+and install that developer Home and, if you want device evidence, to run the
+two device harnesses in `tools/` (the studio device probe below and
+`studio-flow-device-test.py`). A developer-mode Home APK published with a Home
+release would remove the build step; it would still be a download and an
+install, since the updater refuses test packages. What no build offers yet is
+the experience for someone who is not a developer: describing an app and
+getting one made on the phone. That is what ADR 0006's remaining slices cover.
+
 The [studio device probe](../tools/studio-device-probe.py) checks denial, light/dark PNG output and background cancellation in that separate package. It needs a `--dev-mode` APK built with `MAKEPAD_FORCE_DEBUGGABLE=1` so `run-as` can provision test fixtures. The probe restores developer settings and returns to Home; it neither installs APKs nor tests model image delivery. Resolve startup permission prompts before running the probe; rendering does not need location access, which can remain denied. Launch fixtures (the `studio-render:` and `studio-flow:` test actions) are accepted only from the package's private `files/studio-fixture/` folder, where the probe writes them. Device execution was verified on a stock Xiaomi in October 2026 ([evidence](../docs/studio/xiaomi-revalidation.md)).
 
 The manifest's `dev.makepad.android.APPLICATION_EXTENSION` metadata keeps
