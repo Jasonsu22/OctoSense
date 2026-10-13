@@ -50,8 +50,12 @@
 //!   through `media.info`, `media.posterFrame`, `insert.audio` and
 //!   `insert.video`, which the door holds back (#448). The renderer draws a
 //!   clip's poster, or a film or speaker glyph, and the writers copy its
-//!   bytes. The media a deck holds counts against the session's 128 MiB
-//!   once it opens (`too_large:`, `crate::Held`).
+//!   bytes. Before the engine reads, the declared total of a zip's binary
+//!   parts (everything but its XML and relationship parts, and a native
+//!   deck's manifest) is held to the session's 128 MiB of media
+//!   (`too_large:`, in the session ceiling's words, [`binary_total`]), so
+//!   the engine never copies out more; after it reads, every path checks
+//!   the deck's media against the same ceiling.
 //! - A zip inside the zip is `held:`, except an Office package's embedded object
 //!   ([`EMBEDDINGS`]): a chart's workbook or an embedded document is a zip
 //!   that neither the service nor the engine ever unzips (deckcraft's only
@@ -568,6 +572,19 @@ fn inflate(b: &[u8], e: &Entry, keep: bool, watch: &mut dyn FnMut(&[u8])) -> Res
     Ok(out)
 }
 
+/// What a zip's binary parts declare in all: every entry but a text part
+/// of the model (an Office package's XML and relationship parts, a native
+/// deck's `presentation.json` and `mimetype`). The media a deck holds once
+/// read is some of these, so a total past the session's media ceiling is
+/// refused before the engine copies any of it out.
+fn binary_total(entries: &[Entry]) -> u64 {
+    let text = |name: &str| {
+        let lower = name.to_ascii_lowercase();
+        lower.ends_with(".xml") || lower.ends_with(".rels") || lower == "presentation.json" || lower == "mimetype"
+    };
+    entries.iter().filter(|e| !text(&e.name)).map(|e| e.declared).fold(0u64, u64::saturating_add)
+}
+
 /// Whether `head` starts a zip archive: a zip inside the zip.
 fn zip_signature(head: &[u8]) -> bool {
     head.starts_with(b"PK\x03\x04") || head.starts_with(b"PK\x05\x06") || head.starts_with(b"PK\x07\x08")
@@ -590,6 +607,9 @@ fn zip(b: &[u8]) -> Result<Format, String> {
     let dir = directory(b)?;
     read_alike(b, &dir)?;
     let entries = &dir.entries;
+    if let Some(why) = crate::media_over(binary_total(entries)) {
+        return Err(crate::too_large_deck(why));
+    }
     // What it is (module doc): a native deck by deckcraft's own marker,
     // which the engine tries first, else an Office package by its
     // content-type list in the directory both readers read alike. The

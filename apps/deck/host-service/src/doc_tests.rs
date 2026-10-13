@@ -933,30 +933,75 @@ fn hostile_clip_bytes_are_carried_on_every_path_and_never_decoded() {
     }
 }
 
-/// A deck holding more media than the door's 128 MiB, each item small
-/// enough to stay inside the guard's bounds, is `too_large:` on opening.
+/// A deck whose binary parts declare just past the door's 128 MiB of media,
+/// each part inside every other bound of the guard, is `too_large:` on all
+/// seven paths before the engine reads a byte (the guard's pre-read bound,
+/// in the session ceiling's words), whether its media is a native deck's or
+/// a package's parts. One just under opens on every path.
 #[test]
-fn a_deck_past_the_media_ceiling_is_too_large() {
+fn a_deck_past_the_media_ceiling_is_too_large_before_the_engine_reads() {
     use deckcraft_model::{MediaId, MediaItem};
     let w = World::new();
-    let mut p = sample(1);
     let item = guard::RATIO_GRACE as usize;
-    for k in 0..(MAX_RUN_MEDIA as usize / item + 8) {
+    let filler = |k: usize| {
         let mut data = vec![0u8; item];
         data[..8].copy_from_slice(&(k as u64).to_le_bytes());
-        let id = MediaId(p.alloc_id());
-        p.media.push(MediaItem { id, name: format!("filler{k}.bin"), content_type: "application/octet-stream".into(), data: Arc::new(data), link: None });
+        data
+    };
+    let native_with = |n: usize| {
+        let mut p = sample(1);
+        for k in 0..n {
+            let id = MediaId(p.alloc_id());
+            p.media.push(MediaItem { id, name: format!("filler{k}.bin"), content_type: "application/octet-stream".into(), data: Arc::new(filler(k)), link: None });
+        }
+        native(&p)
+    };
+    let over = MAX_RUN_MEDIA as usize / item + 1;
+    assert!((over * item) as u64 > MAX_RUN_MEDIA && ((over - 1) * item) as u64 <= MAX_RUN_MEDIA, "just over, and just under");
+    let package = fx::package((0..over).map(|k| Part::deflated(&format!("ppt/media/filler{k}.bin"), &filler(k))).collect(), "");
+    let paths = |name: &str| {
+        vec![
+            ("open", json!({ "path": name })),
+            ("cover", json!({ "path": name })),
+            ("info", json!({ "path": name })),
+            ("text", json!({ "path": name })),
+            ("render", json!({ "path": name, "out": format!("{name}.png") })),
+            ("convert", json!({ "path": name, "out": format!("{name}.txt") })),
+            ("run", json!({ "path": name, "cmds": [] })),
+        ]
+    };
+    for (name, bytes) in [("over.deckcraft", native_with(over)), ("over.pptx", package)] {
+        assert!(bytes.len() < 4 << 20, "{name}: a small file, {} bytes", bytes.len());
+        w.put(name, &bytes);
+        let before = engine_reads();
+        for (method, args) in paths(name) {
+            let e = w.err(method, args);
+            coded(&e, "too_large");
+            assert!(e.contains(&format!("bytes of media, more than the {MAX_RUN_MEDIA} the door allows")), "{name} {method}: {e}");
+        }
+        assert_eq!(engine_reads(), before, "{name}: refused before the engine read a byte");
     }
-    let bytes = native(&p);
-    assert!(bytes.len() < 4 << 20, "a small file: {} bytes", bytes.len());
-    assert_eq!(guard::check("filled.deckcraft", &bytes), Ok(guard::Format::Native), "inside the guard's bounds");
-    w.put("filled.deckcraft", &bytes);
-    for method in ["open", "cover"] {
-        let e = w.err(method, json!({ "path": "filled.deckcraft" }));
-        coded(&e, "too_large");
-        assert!(e.contains("bytes of media"), "{method}: {e}");
+    w.put("under.deckcraft", &native_with(over - 1));
+    let before = engine_reads();
+    for (method, args) in paths("under.deckcraft") {
+        w.ok(method, args);
     }
-    assert_eq!(docs::open_count(), 0);
+    assert_eq!(engine_reads(), before + 7, "just under: every path read it");
+    assert_eq!(docs::open_count(), 1);
+    // After the engine reads, every path also holds the deck's own media to
+    // the same ceiling, in the same words (`media_ceiling`).
+    let deck = |n: usize| {
+        let mut p = sample(1);
+        for k in 0..n {
+            let id = MediaId(p.alloc_id());
+            p.media.push(MediaItem { id, name: format!("filler{k}.bin"), content_type: "application/octet-stream".into(), data: Arc::new(filler(k)), link: None });
+        }
+        p
+    };
+    let e = media_ceiling(&deck(over)).unwrap_err();
+    coded(&e, "too_large");
+    assert!(e.contains("bytes of media"), "{e}");
+    assert_eq!(media_ceiling(&deck(over - 1)), Ok(()));
 }
 
 /// The import guard passes what the engine itself writes, at the sizes the
