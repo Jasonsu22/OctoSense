@@ -161,9 +161,13 @@ pub fn prepare(artifact: &VerifiedArtifact, cancellation: &Cancellation) -> Resu
         .map_err(|e| e.to_string())?;
     let mut command = Command::new(&helper);
     command.arg(&job).env_clear().env("PATH", "/usr/bin:/bin");
+    // Debug builds pass their test settings on, so the shell and the helper
+    // agree (the lock folder above all). Release builds have neither.
     #[cfg(debug_assertions)]
-    if let Some(value) = std::env::var_os(UNSIGNED_FIXTURES_ENV) {
-        command.env(UNSIGNED_FIXTURES_ENV, value);
+    for setting in [UNSIGNED_FIXTURES_ENV, LOCK_DIR_ENV] {
+        if let Some(value) = std::env::var_os(setting) {
+            command.env(setting, value);
+        }
     }
     let mut child = command
         .stdin(Stdio::piped())

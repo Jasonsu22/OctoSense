@@ -113,11 +113,15 @@ Neither path proves that every app or model provider works after an update.
 Backups are retained in `.octosense-update-<id>/candidate.app` beside the
 installed app. `updates/last-install.json` records the outcome; private
 `install-<id>.log` files record helper errors. The installer's lock is a file
-in this user's private temporary folder (`getconf DARWIN_USER_TEMP_DIR`), named
-after the app's path: nothing is created beside the app, only this user's
-processes can hold it (anyone who can read a folder could lock the folder
-itself), and every profile (`OCTOSENSE_HOME`) of this user shares it.
-Installers of different macOS users of one installation do not share it, so
+in `~/Library/Caches/org.octosense.desktop/updater/`, created owner-only, with
+the home folder taken from the user database rather than `$HOME`; the file is
+named after the app's path. Nothing is created beside the app, every profile
+(`OCTOSENSE_HOME`) of this user shares the lock, and only this user's
+unsandboxed processes can hold it: anyone who can read a folder could lock the
+folder itself, and the sandbox of OctoSense's process apps closes the home
+folder, though not the shared temporary folder. (Debug builds can move it with
+`OCTOSENSE_UPDATE_LOCK_DIR`, for tests.) Installers of different macOS users of
+one installation do not share it, so
 right after its exchange each helper checks that the app it swapped out is the
 one its job recorded. If another installer swapped first, it swaps that
 installer's update back, records that nothing was installed, and reopens the
@@ -301,7 +305,8 @@ Follow-up tests from a second review refuse an update that is not newer,
 refuse a `--restore` of a planted bundle that is not the exact previous
 OctoSense app, swap out a changed bundle that a process keeps running, keep the
 backup of the installed app when the clock went back, and show that holding a
-lock on the installation folder no longer blocks an update. Later ones make an
+lock on the installation folder, or a lock file of the same name in another
+folder, no longer blocks an update. Later ones make an
 installer that swaps second put the first one's update back, swap out a new app
 that started and failed while its process keeps running, take versions from the
 validated signature, and keep the receipt from claiming a rollback before the

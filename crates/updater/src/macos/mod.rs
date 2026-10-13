@@ -14,7 +14,7 @@ use std::{
     os::{
         fd::AsRawFd,
         unix::{
-            ffi::{OsStrExt, OsStringExt},
+            ffi::OsStrExt,
             fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         },
     },
@@ -52,6 +52,13 @@ const MAX_FILES: usize = 50_000;
 /// that reads it (`Trust::of_installed`).
 #[cfg(debug_assertions)]
 const UNSIGNED_FIXTURES_ENV: &str = "OCTOSENSE_UPDATE_UNSIGNED_FIXTURES";
+/// The installer lock's folder under the person's home (`lock_dir`).
+const LOCK_DIR: &str = "Library/Caches/org.octosense.desktop/updater";
+/// Debug builds only: a folder for the installer lock instead of the home's,
+/// so tests of the real helper stay inside temporary folders. Release builds
+/// contain neither this name nor code that reads it.
+#[cfg(debug_assertions)]
+const LOCK_DIR_ENV: &str = "OCTOSENSE_UPDATE_LOCK_DIR";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Ticket {
@@ -142,42 +149,77 @@ impl Trust {
     }
 }
 
-/// This user's private temporary folder, from `confstr`, so the helper's
-/// cleared environment does not matter. The system keeps it at mode 0700.
-fn user_temp_dir() -> Result<PathBuf> {
-    let mut buffer = vec![0u8; 1024];
-    let length = unsafe {
-        libc::confstr(
-            libc::_CS_DARWIN_USER_TEMP_DIR,
+/// This user's home folder from the user database (`getpwuid_r` for the
+/// effective user), never `$HOME`: the helper's environment is cleared, and a
+/// process can set its own `HOME`.
+fn user_home() -> Result<PathBuf> {
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    let mut buffer = vec![0u8; 16 * 1024];
+    let status = unsafe {
+        libc::getpwuid_r(
+            libc::geteuid(),
+            &mut entry,
             buffer.as_mut_ptr().cast(),
             buffer.len(),
+            &mut found,
         )
     };
-    if length < 2 || length > buffer.len() {
-        return Err("This user has no private temporary folder for the update lock.".into());
+    if status != 0 || found.is_null() || entry.pw_dir.is_null() {
+        return Err("Could not find this user's home folder for the update lock.".into());
     }
-    buffer.truncate(length - 1);
-    let folder = PathBuf::from(std::ffi::OsString::from_vec(buffer));
-    private_dir(&folder)?;
-    Ok(folder)
+    let home = unsafe { std::ffi::CStr::from_ptr(entry.pw_dir) };
+    let home = PathBuf::from(std::ffi::OsStr::from_bytes(home.to_bytes()));
+    if !home.is_absolute() {
+        return Err("This user's home folder is not an absolute path.".into());
+    }
+    Ok(home)
+}
+
+/// The installer lock's folder: `LOCK_DIR` under the person's home, which the
+/// macOS process-app sandbox closes, so no sandboxed app can create or hold
+/// the lock there; owner-only, and the same for the shell and the helper,
+/// which both resolve it from the user database.
+fn lock_dir() -> Result<PathBuf> {
+    #[cfg(debug_assertions)]
+    if let Some(folder) = std::env::var_os(LOCK_DIR_ENV) {
+        return private_folder(Path::new(&folder));
+    }
+    private_folder(&user_home()?.join(LOCK_DIR))
+}
+
+/// Creates `folder` owner-only if it is missing (and any missing parent the
+/// same way), then requires that it is a private folder of this user.
+fn private_folder(folder: &Path) -> Result<PathBuf> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(folder)
+        .map_err(|e| format!("Could not create the update lock folder: {e}"))?;
+    private_dir(folder)?;
+    Ok(folder.to_path_buf())
 }
 
 /// Serializes this user's installers of one installation, from any profile,
-/// with an exclusive lock on a file in the user's private temporary folder,
-/// named after the app's path. Nothing is created beside the app, and only
-/// this user's processes can open the file, so nobody else can hold it to
-/// block updates (anyone may lock a folder they can read). Another macOS
-/// user's installer of the same app is caught after the exchange instead
-/// (`swap_in`). Released when dropped or when the helper exits, however it
-/// exits; never inherited by the apps it launches (std opens files
-/// close-on-exec).
+/// with an exclusive lock on a file in `lock_dir`, named after the app's
+/// path. Nothing is created beside the app, and only this user's unsandboxed
+/// processes can open the file, so nobody else can hold it to block updates
+/// (anyone may lock a folder they can read). Another macOS user's installer
+/// of the same app is caught after the exchange instead (`swap_in`). Released
+/// when dropped or when the helper exits, however it exits; never inherited
+/// by the apps it launches (std opens files close-on-exec).
 struct InstallLock {
     _file: File,
 }
 impl InstallLock {
     fn acquire(target: &Path) -> Result<Self> {
+        Self::acquire_in(&lock_dir()?, target)
+    }
+
+    fn acquire_in(folder: &Path, target: &Path) -> Result<Self> {
+        private_dir(folder)?;
         let hash = format!("{:x}", Sha256::digest(target.as_os_str().as_bytes()));
-        let path = user_temp_dir()?.join(format!("octosense-install-{}.lock", &hash[..16]));
+        let path = folder.join(format!("octosense-install-{}.lock", &hash[..16]));
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -298,7 +340,10 @@ fn refuse_privileged_modes(bundle: &Path) -> Result<()> {
 }
 
 fn private_dir(path: &Path) -> Result<()> {
-    let m = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    // Without trailing slashes, a link at the last component is inspected
+    // rather than followed: "folder/" would resolve it.
+    let path: PathBuf = path.components().collect();
+    let m = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
     if !m.is_dir() || m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o077 != 0 {
         return Err("The update staging folder is not private.".into());
     }

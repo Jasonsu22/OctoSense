@@ -485,57 +485,94 @@ fn names(folder: &Path) -> Vec<String> {
     names
 }
 
-// F3 and the review's lock items: the lock is a file in this user's private
-// temporary folder, named after the app's path, shared by every profile of
-// this user. Nothing is created beside the app, and nobody else can hold it.
+/// The lock folder a test uses: `LOCK_DIR` under a stand-in home inside the
+/// fixture's temporary folder. Unit tests never resolve the real home.
+fn lock_folder(f: &Fixture) -> PathBuf {
+    let home = f.ticket.target.parent().unwrap().join("home");
+    private_folder(&home.join(LOCK_DIR)).unwrap()
+}
+
+fn lock_name(target: &Path) -> String {
+    let hash = format!("{:x}", Sha256::digest(target.as_os_str().as_bytes()));
+    format!("octosense-install-{}.lock", &hash[..16])
+}
+
+// F3 and the review's lock items: the lock is a file under the person's home
+// (which the process-app sandbox closes), named after the app's path, and
+// shared by every profile of this user. Nothing is created beside the app,
+// and nobody else can hold it.
 #[test]
-fn the_install_lock_is_per_user_private_admits_one_installer_and_creates_nothing() {
+fn the_install_lock_admits_one_installer_creates_nothing_and_ignores_other_locks() {
     let f = fixture();
     let folder = f.ticket.target.parent().unwrap();
+    let locks = lock_folder(&f);
     let before = names(folder);
     // Anyone who can read the installation folder can lock the folder
-    // itself. That no longer blocks an update.
+    // itself, and a sandboxed app can write the shared temporary folder,
+    // where the previous lock lived. Neither blocks an update.
     let shared = File::open(folder).unwrap();
     assert_eq!(
         unsafe { libc::flock(shared.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
         0
     );
-    let lock = InstallLock::acquire(&f.ticket.target).unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let decoy = File::create(elsewhere.path().join(lock_name(&f.ticket.target))).unwrap();
+    assert_eq!(
+        unsafe { libc::flock(decoy.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    let lock = InstallLock::acquire_in(&locks, &f.ticket.target).unwrap();
     // The installer of any other profile of this user waits its turn: the
     // lock does not depend on the profile.
-    assert!(InstallLock::acquire(&f.ticket.target)
+    assert!(InstallLock::acquire_in(&locks, &f.ticket.target)
         .err()
         .unwrap()
         .contains("Another update"));
     // Another installation has its own lock.
-    let _other = InstallLock::acquire(&folder.join("Other.app")).unwrap();
+    let _other = InstallLock::acquire_in(&locks, &folder.join("Other.app")).unwrap();
     assert_eq!(names(folder), before);
-    // The lock file lives in the user's private temporary folder.
-    let temp = user_temp_dir().unwrap();
-    assert_eq!(
-        fs::symlink_metadata(&temp).unwrap().mode() & 0o077,
-        0,
-        "the user's temporary folder must be private"
-    );
-    let hash = format!(
-        "{:x}",
-        Sha256::digest(f.ticket.target.as_os_str().as_bytes())
-    );
-    assert!(temp
-        .join(format!("octosense-install-{}.lock", &hash[..16]))
-        .is_file());
+    assert!(locks.join(lock_name(&f.ticket.target)).is_file());
     drop(lock);
     // Released on drop. A child another test thread is forking shares the
     // descriptor until it execs (close-on-exec), so allow a moment.
     let until = Instant::now() + Duration::from_secs(2);
     let again = loop {
-        match InstallLock::acquire(&f.ticket.target) {
+        match InstallLock::acquire_in(&locks, &f.ticket.target) {
             Err(_) if Instant::now() < until => std::thread::sleep(Duration::from_millis(10)),
             again => break again,
         }
     };
     assert!(again.is_ok());
     assert_eq!(names(folder), before);
+}
+
+#[test]
+fn the_lock_folder_is_created_owner_only_and_must_be_private() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    // Created with every missing parent, owner-only.
+    let created = private_folder(&home.join(LOCK_DIR)).unwrap();
+    for folder in [created.as_path(), created.parent().unwrap()] {
+        assert_eq!(fs::metadata(folder).unwrap().mode() & 0o777, 0o700);
+    }
+    // A folder others can read is refused, by the folder check and the lock.
+    let open = home.join("open");
+    fs::create_dir(&open).unwrap();
+    fs::set_permissions(&open, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(private_folder(&open).is_err());
+    assert!(InstallLock::acquire_in(&open, &home.join("OctoSense.app")).is_err());
+    // So is a link to a private folder, with or without a trailing slash.
+    let link = home.join("link");
+    std::os::unix::fs::symlink(&created, &link).unwrap();
+    assert!(private_dir(&link).is_err());
+    assert!(private_dir(Path::new(&format!("{}/", link.display()))).is_err());
+    assert!(private_dir(Path::new(&format!("{}/", created.display()))).is_ok());
+}
+
+#[test]
+fn the_home_folder_comes_from_the_user_database() {
+    let home = user_home().unwrap();
+    assert!(home.is_absolute() && home.is_dir(), "{}", home.display());
 }
 
 /// A retained update beside `target`, its job written at `written`.
@@ -597,7 +634,7 @@ fn the_sweep_keeps_exactly_one_backup() {
         .unwrap();
     // A link out of a retained update is removed, never followed.
     std::os::unix::fs::symlink(f.profile().join("note.md"), oldest.join("note-link")).unwrap();
-    let lock = InstallLock::acquire(&target).unwrap();
+    let lock = InstallLock::acquire_in(&lock_folder(&f), &target).unwrap();
     assert_eq!(sweep_retained(&target, &lock, now), 3);
     for gone in [&oldest, &interrupted, &rolled_back] {
         assert!(!gone.exists(), "{} was kept", gone.display());
@@ -647,7 +684,7 @@ fn the_sweep_keeps_the_installed_apps_backup_after_the_clock_went_back() {
     // ran ahead. Modification times alone would keep the wrong one.
     let needed = retained(&f, &target, Some("complete"), now - 2 * day, &installed);
     let stale = retained(&f, &target, Some("complete"), now - day, "an older update");
-    let lock = InstallLock::acquire(&target).unwrap();
+    let lock = InstallLock::acquire_in(&lock_folder(&f), &target).unwrap();
     assert_eq!(sweep_retained(&target, &lock, now), 1);
     assert!(needed.is_dir(), "the backup --restore needs was removed");
     assert!(!stale.exists());
@@ -853,7 +890,7 @@ fn an_installer_that_swaps_second_puts_the_first_ones_update_back() {
     // removes B's unused update.
     phase(a.root(), "complete").unwrap();
     phase(b_root, "not_installed").unwrap();
-    let lock = InstallLock::acquire(&a.ticket.target).unwrap();
+    let lock = InstallLock::acquire_in(&lock_folder(&a), &a.ticket.target).unwrap();
     let later = SystemTime::now() + 2 * DISPOSABLE_AFTER;
     assert_eq!(sweep_retained(&a.ticket.target, &lock, later), 1);
     assert!(a.root().is_dir() && !b_root.exists());
