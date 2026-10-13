@@ -11,11 +11,13 @@
 //!   name as `doc`; `close`, `state`, `save`, `slides`, `slide`, `hit`,
 //!   `view`, `layouts`, `text`, `format_state`, `slides_op`, `notes`,
 //!   `transition`, `insert`, `set_text`, `format`, `shape`, `picture`,
-//!   `table`, `chart`, `design`, `undo`, `redo`, `show` and `export` work on
-//!   it, and `themes`, `fonts`, `shapes` and `cover` need none. Who holds an
-//!   open document, on which thread, and what releases it: [`docs`]. How a
-//!   method's engine commands reach it, through the same door as `deck.run`,
-//!   as one undo step: [`gate`].
+//!   `table`, `chart`, `design`, `undo`, `redo`, `show`, `export` and
+//!   `media` work on it, and `themes`, `fonts`, `shapes` and `cover` need
+//!   none. Who holds an open document, on which thread, and what releases
+//!   it: [`docs`]. How a method's engine commands reach it, through the same
+//!   door as `deck.run`, as one undo step: [`gate`]. `media` runs no engine
+//!   command: it writes a clip's bytes, as the deck stores them, for the
+//!   app's player ([`media`]).
 //!
 //! The service does all file I/O itself and feeds the engine bytes, so the
 //! engine never touches a path, and a link written inside a presentation
@@ -70,6 +72,7 @@ mod covers;
 mod docs;
 mod gate;
 mod guard;
+mod media;
 mod objects;
 mod pictures;
 mod reading;
@@ -515,6 +518,7 @@ fn dispatch_in(method: &str, args: &Json, cx: &Ctx) -> Result<Json, String> {
         "redo" => slides::history(args, cx, true),
         "show" => reading::show(args, cx),
         "export" => writing::export(args, cx),
+        "media" => media::media(args, cx),
         other => Err(format!("deck.{other} is not a method of the deck service")),
     }
 }
