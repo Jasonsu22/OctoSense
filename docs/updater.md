@@ -64,7 +64,10 @@ the exchange and again immediately before launching it, and checks the previous
 app before reopening it. An unsigned or ad-hoc signed installation, which is
 every source or development build, is refused with a message; **Open installer
 manually** remains. Debug builds, never release builds, accept unsigned test
-bundles when `OCTOSENSE_UPDATE_UNSIGNED_FIXTURES=1` is set.
+bundles when `OCTOSENSE_UPDATE_UNSIGNED_FIXTURES=1` is set. The update must
+also be newer than the installed app: an older release is signed just as
+validly, so the helper compares the semantic versions again, as preparation
+does. `--restore` is the one deliberate step back.
 
 Preparation runs in the background: recheck the signed DMG, mount it read-only,
 validate its bundle ID, release version and code signature, and copy it to a
@@ -88,14 +91,17 @@ is **not** rolled back: compatibility of any future profile migration remains a
 release concern.
 
 Once the apps have closed, the person gets an app back from any failure. A
-failure before the exchange (an update that changed or is not signed by the
-same developer, a bundle still in use) reopens the unchanged installed app; a
-failed startup, or a new app that fails its check before launch, restores the
-previous bundle when its fingerprint still matches, then reopens it. Either way
-it opens with a rollback notice. Code that fails its check after the exchange
-is moved back out, so it never stays installed. Nothing is reopened only when
-the installed app itself is not validly signed, or when recovery cannot run
-because the retained previous app changed or the new one is still running. The
+failure before the exchange (an update that changed, is not newer or is not
+signed by the same developer, a bundle still in use) reopens the unchanged
+installed app. After the exchange, the previous bundle goes back when its
+fingerprint still matches: at once if the new app fails its check before
+launch, even while a process still runs from it (a rename does not disturb
+running processes), and after a new app that started and failed has stopped.
+The previous app then reopens with a rollback notice, once processes from the
+failed bundle exit or 20 seconds pass. Code that fails its check after the
+exchange therefore never stays installed. Nothing is reopened only when the
+installed app itself is not validly signed, or when recovery cannot run because
+the retained previous app changed or a new app that started stays running. The
 next start shows a failed, cancelled or rolled-back outcome once.
 
 An older target such as public RC6 has no startup-acknowledgement protocol.
@@ -105,20 +111,29 @@ Neither path proves that every app or model provider works after an update.
 
 Backups are retained in `.octosense-update-<id>/candidate.app` beside the
 installed app. `updates/last-install.json` records the outcome; private
-`install-<id>.log` files record helper errors. The installer's lock is held on
-the installation folder itself, so nothing else is created beside the app. A
-helper interruption leaves a complete bundle at the installed path and both
-versions available. With all instances closed, the retained helper's
+`install-<id>.log` files record helper errors. The installer's lock is a file
+in the private `updates/` folder named after the app's path, so nothing is
+created beside the app and only the person's own processes can hold it (anyone
+who can read a folder could lock the folder itself). The trade-off: installers
+from different profiles (`OCTOSENSE_HOME`) of one installation do not share the
+lock. Each still requires that no process of this user uses the bundle and
+rechecks both fingerprints before its atomic exchange, but two such
+installations started at the same moment are not strictly serialized. A helper
+interruption leaves a complete bundle at the installed path and both versions
+available. With all instances closed, the retained helper's
 `--restore <job.json>` operation can restore the original bundle, including
-when interruption occurred immediately before or after exchange. It refuses
-changed bundles and code without the installed app's signing identity, and is
-safe to repeat; if the installed app's own signature is damaged, it refuses,
-and the retained app can be moved back in Finder. At each start, and after each
-successful installation, only the newest retained folder that may hold a
-previous app (the one `--restore` needs) is kept: older ones are deleted, and
-folders from attempts that never replaced the app are deleted once they are
-ten minutes old. Folders still being prepared, those of another installation,
-and any with a disk image still attached are left alone.
+when interruption occurred immediately before or after exchange. It requires
+both bundles to be OctoSense app bundles and swaps back only the exact previous
+bundle that installation replaced (the job's recorded fingerprint), with the
+installed app's signing identity. It is safe to repeat; if the installed app's
+own signature is damaged, it refuses, and the retained app can be moved back in
+Finder. At each start, and after each successful installation, one retained
+folder that may hold a previous app is kept: the one whose update is the app
+installed now (what `--restore` needs), or else the newest. Others that may
+hold a previous app are deleted, and folders from attempts that never replaced
+the app are deleted once they are ten minutes old. Folders still being
+prepared, those of another installation, and any with a disk image still
+attached are left alone.
 
 Linux package handlers may be unable to read the hidden profile folder the
 download lives in (Ubuntu's App Center is a snap, and snaps cannot see hidden
@@ -278,11 +293,16 @@ physical device remains **unverified**.
 After an independent security review, unit tests refuse unsigned updates and
 updates signed by another identity (ad-hoc `codesign -s -` fixtures) both before
 the exchange and before launch, reopen the previous app after a failure before
-the exchange, and cover the folder lock, the backup sweep and setuid files. The
-actual helper executable, built both for debug and for release, was given a
-planted unsigned app with `OCTOSENSE_UPDATE_UNSIGNED_FIXTURES=1` set: the
-release helper still refused it at the signature check, and its binary does not
-contain that setting's name. Real signatures were checked read-only against
+the exchange, and cover the install lock, the backup sweep and setuid files.
+Follow-up tests from a second review refuse an update that is not newer,
+refuse a `--restore` of a planted bundle that is not the exact previous
+OctoSense app, swap out a changed bundle that a process keeps running, keep the
+backup of the installed app when the clock went back, and show that holding a
+lock on the installation folder no longer blocks an update. The actual helper
+executable, built both for debug and for release, was given a planted unsigned
+app with `OCTOSENSE_UPDATE_UNSIGNED_FIXTURES=1` set: the release helper still
+refused it at the signature check, and its binary does not contain that
+setting's name. Desktop CI runs that release half too. Real signatures were checked read-only against
 copies of two third-party apps from different teams: the Developer-ID-signed
 one (OctoSense releases are signed that way) was accepted as an installation,
 admitted its own signature, and refused the other team's app and a modified

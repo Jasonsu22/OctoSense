@@ -129,25 +129,38 @@ impl Trust {
     }
 }
 
-/// Serializes installers for one installation folder with an exclusive lock
-/// on the folder itself, so nothing is created beside the app. Released when
-/// dropped or when the helper exits, however it exits; never inherited by
-/// the apps it launches (std opens files close-on-exec).
+/// Serializes installers of one installation with an exclusive lock on a file
+/// in the private update folder, named after the app's path. Nothing is
+/// created beside the app, and only this user's processes can open the file,
+/// so nobody else can hold it to block updates (anyone may lock a folder they
+/// can read). Installers from different profiles are not serialized by it.
+/// Released when dropped or when the helper exits, however it exits; never
+/// inherited by the apps it launches (std opens files close-on-exec).
 struct InstallLock {
-    _folder: File,
+    _file: File,
 }
 impl InstallLock {
-    fn acquire(target: &Path) -> Result<Self> {
-        let folder = target.parent().ok_or("No installation folder.")?;
-        let folder = OpenOptions::new()
+    fn acquire(updates: &Path, target: &Path) -> Result<Self> {
+        private_dir(updates)?;
+        let hash = format!("{:x}", Sha256::digest(target.as_os_str().as_bytes()));
+        let path = updates.join(format!("install-{}.lock", &hash[..16]));
+        let file = OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-            .open(folder)
-            .map_err(|e| format!("Could not lock the installation folder: {e}"))?;
-        if unsafe { libc::flock(folder.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|e| format!("Could not lock the update: {e}"))?;
+        let meta = file.metadata().map_err(|e| e.to_string())?;
+        if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
+            return Err("Invalid update lock file.".into());
+        }
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err("Another update is already installing.".into());
         }
-        Ok(Self { _folder: folder })
+        Ok(Self { _file: file })
     }
 }
 
@@ -211,6 +224,19 @@ fn validate_bundle(bundle: &Path, version: Option<&str>) -> Result<()> {
         return Err("The downloaded app has no executable.".into());
     }
     refuse_privileged_modes(bundle)
+}
+
+/// An update must be newer than the installed app, compared as semantic
+/// versions. An older release is signed just as validly, so a downgrade would
+/// pass every other check; `--restore` is the one deliberate step back.
+fn require_newer(installed: &Path, version: &str) -> Result<()> {
+    let parse = |text: &str| {
+        semver::Version::parse(text).map_err(|e| format!("Invalid release version {text}: {e}"))
+    };
+    if parse(version)? <= parse(&plist_field(installed, "CFBundleShortVersionString")?)? {
+        return Err("The update must be newer than the installed app.".into());
+    }
+    Ok(())
 }
 
 /// A setuid or setgid file would run as this user for anyone who opens it
@@ -480,9 +506,11 @@ fn wait_until_stopped(bundle: &Path, budget: Duration) -> Result<()> {
 }
 
 /// Idempotent recovery, including a helper interrupted on either side of the
-/// atomic exchange. It never guesses from the journal alone, and it puts back
-/// only code with the installed identity: a planted job cannot turn a
-/// recovery into an installation.
+/// atomic exchange. It never guesses from the journal alone. Both bundles must
+/// be OctoSense app bundles, and it swaps back only the exact previous bundle
+/// this installation replaced (the job's recorded fingerprint), with the
+/// installed identity: a planted job cannot turn a recovery into an
+/// installation.
 fn restore_previous(
     ticket: &Ticket,
     job: &Path,
@@ -490,6 +518,14 @@ fn restore_previous(
     trust: &Trust,
     message: &str,
 ) -> Result<()> {
+    for (bundle, which) in [
+        (ticket.target.as_path(), "installed"),
+        (candidate, "retained"),
+    ] {
+        validate_bundle(bundle, None).map_err(|error| {
+            format!("Recovery stopped: the {which} app is not an OctoSense app bundle ({error}) Both bundles were preserved.")
+        })?;
+    }
     let installed = digest_tree(&ticket.target)?;
     let staged = digest_tree(candidate)?;
     if installed == ticket.new_digest && staged == ticket.old_digest {
@@ -583,7 +619,8 @@ pub fn helper_main() -> Result<()> {
     let ticket = read_ticket(&job)?;
     let root = job.parent().unwrap();
     let candidate = root.join("candidate.app");
-    let lock = InstallLock::acquire(&ticket.target)?;
+    let updates = ticket.receipt.parent().ok_or("No private update folder.")?;
+    let lock = InstallLock::acquire(updates, &ticket.target)?;
     if restore {
         ensure_bundle_stopped(&ticket.target)?;
         let trust = Trust::of_installed(&ticket.target)?;
@@ -671,8 +708,32 @@ fn finish_exchanged(
     stop_wait: Duration,
 ) -> Result<()> {
     let root = job.parent().ok_or("Missing staging folder.")?;
-    if let Err(error) = start_new(ticket, job, root, trust) {
-        return roll_back(ticket, job, candidate, trust, &error, stop_wait);
+    // Checked again right before launch: code that fails never starts.
+    let child =
+        match phase(root, "starting").and_then(|()| launch_verified(ticket, Some(job), trust)) {
+            Ok(child) => child,
+            Err(error) => {
+                return roll_back(
+                    ticket,
+                    job,
+                    candidate,
+                    trust,
+                    &error,
+                    Recovery::Now,
+                    stop_wait,
+                )
+            }
+        };
+    if let Err(error) = wait_for_startup(ticket, root, child) {
+        return roll_back(
+            ticket,
+            job,
+            candidate,
+            trust,
+            &error,
+            Recovery::AfterExit,
+            stop_wait,
+        );
     }
     write_json(
         &root.join("state.json"),
@@ -703,7 +764,14 @@ fn exchange_verified(
     {
         return Err("The installed app or staged update changed after it was prepared.".into());
     }
-    validate_bundle(candidate, ticket.new_tag.strip_prefix("desktop-v"))?;
+    // The staged app's version is the job's release, and newer than what is
+    // installed: the job cannot skip the comparison by omitting its tag.
+    let version = ticket
+        .new_tag
+        .strip_prefix("desktop-v")
+        .ok_or("The update job has no release tag.")?;
+    validate_bundle(candidate, Some(version))?;
+    require_newer(&ticket.target, version)?;
     trust
         .admit(candidate)
         .map_err(|reason| format!("The update {reason}."))?;
@@ -711,11 +779,9 @@ fn exchange_verified(
     exchange(&ticket.target, candidate)
 }
 
-/// Starts the exchanged app, checked again first, and waits for its first
-/// frame (or, for an older release, for it to stay alive).
-fn start_new(ticket: &Ticket, job: &Path, root: &Path, trust: &Trust) -> Result<()> {
-    phase(root, "starting")?;
-    let mut child = launch_verified(ticket, Some(job), trust)?;
+/// Waits for the new app's first frame (or, for an older release, for it to
+/// stay alive).
+fn wait_for_startup(ticket: &Ticket, root: &Path, mut child: Child) -> Result<()> {
     let deadline = Instant::now()
         + if ticket.startup_ack {
             STARTUP_WAIT
@@ -743,22 +809,37 @@ fn start_new(ticket: &Ticket, job: &Path, root: &Path, trust: &Trust) -> Result<
     }
 }
 
-/// The new app did not start, or failed its check before launch: put the
-/// previous app back and reopen it. Only the previous app must be exactly as
-/// it was; whatever is installed goes back into the staging folder even if it
-/// changed after its checks, so unverified code never stays installed. Nothing
-/// is opened only when the previous app changed or the bundle stays in use;
-/// the receipt then explains, and both bundles are kept.
+/// When `roll_back` puts the previous app back.
+#[derive(Clone, Copy)]
+enum Recovery {
+    /// The new app failed its check before launch and never ran: swap at
+    /// once. A rename does not disturb running processes, so nothing that
+    /// runs from the unverified bundle can keep it installed.
+    Now,
+    /// The new app ran: let it and its bundled children stop first.
+    AfterExit,
+}
+
+/// Puts the previous app back and reopens it. Only the previous app must be
+/// exactly as it was (the job's recorded fingerprint); whatever is installed
+/// goes back into the staging folder even if it changed after its checks, so
+/// unverified code never stays installed. Nothing is opened only when the
+/// previous app changed, or a new app that ran stays in use; the receipt then
+/// explains, and both bundles are kept.
 fn roll_back(
     ticket: &Ticket,
     job: &Path,
     candidate: &Path,
     trust: &Trust,
     error: &str,
+    when: Recovery,
     stop_wait: Duration,
 ) -> Result<()> {
     let root = job.parent().ok_or("Missing staging folder.")?;
-    let restored = wait_until_stopped(&ticket.target, stop_wait).and_then(|()| {
+    let restored = (|| {
+        if let Recovery::AfterExit = when {
+            wait_until_stopped(&ticket.target, stop_wait)?;
+        }
         if digest_tree(candidate)? != ticket.old_digest {
             return Err(
                 "Automatic recovery stopped because the retained previous app changed.".into(),
@@ -768,7 +849,7 @@ fn roll_back(
             format!("Automatic recovery stopped: the retained previous app {reason}.")
         })?;
         exchange(&ticket.target, candidate)
-    });
+    })();
     if let Err(stopped) = restored {
         let message = format!(
             "{error} {stopped} Both bundles are kept in {}; with OctoSense closed, the helper there can restore the previous app with --restore.",
@@ -784,6 +865,10 @@ fn roll_back(
         "rolled_back",
         &format!("{error} The previous version was restored. Your app data was not replaced."),
     );
+    // Whatever still runs from the failed bundle now runs from the staging
+    // folder. Give it time to exit (a kernel there may hold the profile's
+    // data lock) before the previous app reopens, but reopen it regardless.
+    let _ = wait_until_stopped(candidate, stop_wait);
     launch_verified(ticket, None, trust).map(drop)
 }
 
@@ -882,23 +967,32 @@ fn read_receipt(path: &Path) -> Option<serde_json::Value> {
 }
 
 /// Deletes retained updates beside this installation that nothing needs;
-/// each holds a whole app. Run at startup, off the UI thread, and by the
-/// helper after a successful installation. Returns how many were removed.
-pub fn sweep_backups() -> usize {
+/// each holds a whole app. Run at startup, off the UI thread, with the
+/// private update folder, and by the helper after a successful installation.
+/// Returns how many were removed.
+pub fn sweep_backups(updates: &Path) -> usize {
     let Ok(target) = current_bundle() else {
         return 0;
     };
     // An installer at work holds the lock: leave everything to it.
-    let Ok(lock) = InstallLock::acquire(&target) else {
+    let Ok(lock) = InstallLock::acquire(updates, &target) else {
         return 0;
     };
     sweep_retained(&target, &lock, SystemTime::now())
 }
 
-/// Keeps the newest retained update that may hold the previous app (the one
-/// `--restore` needs) and removes older ones; an attempt that never replaced
-/// anything goes once it is `DISPOSABLE_AFTER` old. Only private
-/// `.octosense-update-<uuid>` folders with a valid job for this exact
+struct Retained {
+    written: SystemTime,
+    holds_previous: bool,
+    new_digest: String,
+    root: PathBuf,
+}
+
+/// Keeps one retained update that may hold the previous app: the one whose
+/// update is what is installed now (what `--restore` needs), else the newest.
+/// Other updates that may hold a previous app are removed, and an attempt that
+/// never replaced anything goes once it is `DISPOSABLE_AFTER` old. Only
+/// private `.octosense-update-<uuid>` folders with a valid job for this exact
 /// installation are considered.
 fn sweep_retained(target: &Path, _lock: &InstallLock, now: SystemTime) -> usize {
     let Some(folder) = target.parent() else {
@@ -920,24 +1014,41 @@ fn sweep_retained(target: &Path, _lock: &InstallLock, now: SystemTime) -> usize 
         let job = root.join("job.json");
         // read_ticket requires a private folder owned by this user, named
         // for its own job. A folder still being prepared has no job yet.
-        if uuid::Uuid::parse_str(id).is_err()
-            || read_ticket(&job).map(|ticket| ticket.target) != Ok(target.to_path_buf())
-        {
+        if uuid::Uuid::parse_str(id).is_err() {
             continue;
         }
+        let Ok(ticket) = read_ticket(&job) else {
+            continue;
+        };
         let Ok(written) = fs::symlink_metadata(&job).and_then(|m| m.modified()) else {
             continue;
         };
-        retained.push((written, may_hold_previous_app(&root), root));
+        if ticket.target == target {
+            retained.push(Retained {
+                written,
+                holds_previous: may_hold_previous_app(&root),
+                new_digest: ticket.new_digest,
+                root,
+            });
+        }
     }
-    retained.sort_by_key(|(written, _, _)| std::cmp::Reverse(*written));
-    let keep = retained.iter().position(|(_, holds, _)| *holds);
+    retained.sort_by_key(|r| std::cmp::Reverse(r.written));
+    // The installed app's fingerprint names the backup `--restore` needs, so
+    // a clock set back cannot make the sweep prefer another one. Hashing the
+    // app is needed only when there is more than one to choose from.
+    let installed = (retained.iter().filter(|r| r.holds_previous).count() > 1)
+        .then(|| digest_tree(target).ok())
+        .flatten();
+    let keep = retained
+        .iter()
+        .position(|r| r.holds_previous && Some(&r.new_digest) == installed.as_ref())
+        .or_else(|| retained.iter().position(|r| r.holds_previous));
     let mut removed = 0;
-    for (index, (written, holds, root)) in retained.iter().enumerate() {
+    for (index, r) in retained.iter().enumerate() {
         let settled = now
-            .duration_since(*written)
+            .duration_since(r.written)
             .is_ok_and(|age| age >= DISPOSABLE_AFTER);
-        if Some(index) != keep && (*holds || settled) && remove_retained(root) {
+        if Some(index) != keep && (r.holds_previous || settled) && remove_retained(&r.root) {
             removed += 1;
         }
     }

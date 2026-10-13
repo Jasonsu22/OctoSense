@@ -69,12 +69,7 @@ pub fn prepare(artifact: &VerifiedArtifact, cancellation: &Cancellation) -> Resu
         .tag()
         .strip_prefix("desktop-v")
         .ok_or("Invalid release tag.")?;
-    if semver::Version::parse(version).map_err(|e| e.to_string())?
-        <= semver::Version::parse(&plist_field(&target, "CFBundleShortVersionString")?)
-            .map_err(|e| e.to_string())?
-    {
-        return Err("The update must be newer than the installed app.".into());
-    }
+    require_newer(&target, version)?;
     let parent = target.parent().ok_or("No installation folder.")?;
     let nonce = uuid::Uuid::new_v4().to_string();
     let root = parent.join(format!(".octosense-update-{nonce}"));

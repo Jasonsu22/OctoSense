@@ -102,7 +102,7 @@ fn closing_commit_pipe_cancels_and_removes_only_the_staging_folder() {
         assert!(wait(&mut child).success());
         assert!(!f.root.exists());
         assert_eq!(fs::read(f.target.join("untouched")).unwrap(), b"original");
-        // Its lock was the folder itself: nothing is left beside the app.
+        // Its lock lives in the private update folder: nothing is left beside the app.
         assert_eq!(names(f.target.parent().unwrap()), ["OctoSense.app"]);
     }
 }

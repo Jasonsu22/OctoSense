@@ -473,38 +473,93 @@ fn the_next_start_reports_an_unseen_failure_once() {
     assert_eq!(take_install_notice(cache).unwrap().0, "Update cancelled");
 }
 
-// F3: the lock is the installation folder itself; nothing is created there.
+fn names(folder: &Path) -> Vec<String> {
+    let mut names: Vec<_> = fs::read_dir(folder)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+// F3 and the review's lock item: the lock is a private file named after the
+// app's path. Nothing is created beside the app, and nobody else can hold it.
 #[test]
-fn the_install_lock_admits_one_installer_and_creates_nothing() {
+fn the_install_lock_is_private_admits_one_installer_and_creates_nothing() {
     let f = fixture();
     let folder = f.ticket.target.parent().unwrap();
-    let names = || {
-        let mut names: Vec<_> = fs::read_dir(folder)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        names.sort();
-        names
-    };
-    let before = names();
-    let lock = InstallLock::acquire(&f.ticket.target).unwrap();
-    assert!(InstallLock::acquire(&f.ticket.target)
+    let updates = f.ticket.receipt.parent().unwrap();
+    let before = names(folder);
+    // Anyone who can read the installation folder can lock the folder
+    // itself. That no longer blocks an update.
+    let shared = File::open(folder).unwrap();
+    assert_eq!(
+        unsafe { libc::flock(shared.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    let lock = InstallLock::acquire(updates, &f.ticket.target).unwrap();
+    assert!(InstallLock::acquire(updates, &f.ticket.target)
         .err()
         .unwrap()
         .contains("Another update"));
-    assert_eq!(names(), before);
+    // Another installation has its own lock.
+    let _other = InstallLock::acquire(updates, &folder.join("Other.app")).unwrap();
+    assert_eq!(names(folder), before);
+    let locks = names(updates)
+        .into_iter()
+        .filter(|name| name.starts_with("install-") && name.ends_with(".lock"))
+        .count();
+    assert_eq!(locks, 2);
     drop(lock);
     // Released on drop. A child another test thread is forking shares the
     // descriptor until it execs (close-on-exec), so allow a moment.
     let until = Instant::now() + Duration::from_secs(2);
     let again = loop {
-        match InstallLock::acquire(&f.ticket.target) {
+        match InstallLock::acquire(updates, &f.ticket.target) {
             Err(_) if Instant::now() < until => std::thread::sleep(Duration::from_millis(10)),
             again => break again,
         }
     };
     assert!(again.is_ok());
-    assert_eq!(names(), before);
+    drop(again);
+    // An update folder other users can read is not used for the lock.
+    fs::set_permissions(updates, fs::Permissions::from_mode(0o755)).unwrap();
+    let refused = InstallLock::acquire(updates, &f.ticket.target).err();
+    fs::set_permissions(updates, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(refused.unwrap().contains("not private"));
+    assert_eq!(names(folder), before);
+}
+
+/// A retained update beside `target`, its job written at `written`.
+fn retained(
+    f: &Fixture,
+    target: &Path,
+    phase: Option<&str>,
+    written: SystemTime,
+    new_digest: &str,
+) -> PathBuf {
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let root = target
+        .parent()
+        .unwrap()
+        .join(format!(".octosense-update-{nonce}"));
+    fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+    bundle(&root.join("candidate.app"), "0.1.0-rc.4", "#!/bin/sh\n");
+    let mut ticket = serde_json::to_value(&f.ticket).unwrap();
+    ticket["nonce"] = nonce.into();
+    ticket["target"] = target.to_str().unwrap().into();
+    ticket["new_digest"] = new_digest.into();
+    write_json(&root.join("job.json"), &ticket).unwrap();
+    if let Some(phase) = phase {
+        super::phase(&root, phase).unwrap();
+    }
+    fs::File::options()
+        .write(true)
+        .open(root.join("job.json"))
+        .unwrap()
+        .set_modified(written)
+        .unwrap();
+    root
 }
 
 // F4: retained updates are swept down to the one backup `--restore` needs.
@@ -514,25 +569,11 @@ fn the_sweep_keeps_exactly_one_backup() {
     let folder = f.ticket.target.parent().unwrap().to_path_buf();
     let now = SystemTime::now();
     let day = Duration::from_secs(24 * 60 * 60);
+    // None of these installed the app that is installed now, so the sweep
+    // falls back to their jobs' modification times.
+    let update = f.ticket.new_digest.clone();
     let retained = |target: &Path, phase: Option<&str>, age: Duration| {
-        let nonce = uuid::Uuid::new_v4().to_string();
-        let root = folder.join(format!(".octosense-update-{nonce}"));
-        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
-        bundle(&root.join("candidate.app"), "0.1.0-rc.4", "#!/bin/sh\n");
-        let mut ticket = serde_json::to_value(&f.ticket).unwrap();
-        ticket["nonce"] = nonce.into();
-        ticket["target"] = target.to_str().unwrap().into();
-        write_json(&root.join("job.json"), &ticket).unwrap();
-        if let Some(phase) = phase {
-            super::phase(&root, phase).unwrap();
-        }
-        fs::File::options()
-            .write(true)
-            .open(root.join("job.json"))
-            .unwrap()
-            .set_modified(now - age)
-            .unwrap();
-        root
+        retained(&f, target, phase, now - age, &update)
     };
     let target = f.ticket.target.clone();
     let oldest = retained(&target, Some("complete"), 3 * day);
@@ -548,7 +589,7 @@ fn the_sweep_keeps_exactly_one_backup() {
         .unwrap();
     // A link out of a retained update is removed, never followed.
     std::os::unix::fs::symlink(f.profile().join("note.md"), oldest.join("note-link")).unwrap();
-    let lock = InstallLock::acquire(&target).unwrap();
+    let lock = InstallLock::acquire(f.ticket.receipt.parent().unwrap(), &target).unwrap();
     assert_eq!(sweep_retained(&target, &lock, now), 3);
     for gone in [&oldest, &interrupted, &rolled_back] {
         assert!(!gone.exists(), "{} was kept", gone.display());
@@ -586,6 +627,24 @@ fn the_sweep_keeps_exactly_one_backup() {
     assert!(newest.is_dir() && !failed_just_now.exists() && !f.root().exists());
 }
 
+#[test]
+fn the_sweep_keeps_the_installed_apps_backup_after_the_clock_went_back() {
+    let f = fixture();
+    let target = f.ticket.target.clone();
+    let now = SystemTime::now();
+    let day = Duration::from_secs(24 * 60 * 60);
+    let installed = digest_tree(&target).unwrap();
+    // The backup of the update installed now was written first; an older
+    // installation's backup carries a later time, written while the clock
+    // ran ahead. Modification times alone would keep the wrong one.
+    let needed = retained(&f, &target, Some("complete"), now - 2 * day, &installed);
+    let stale = retained(&f, &target, Some("complete"), now - day, "an older update");
+    let lock = InstallLock::acquire(f.ticket.receipt.parent().unwrap(), &target).unwrap();
+    assert_eq!(sweep_retained(&target, &lock, now), 1);
+    assert!(needed.is_dir(), "the backup --restore needs was removed");
+    assert!(!stale.exists());
+}
+
 // F5: every permission bit is fingerprinted; setuid and setgid are refused.
 #[test]
 fn permission_bits_are_fingerprinted_and_setuid_files_are_refused() {
@@ -606,4 +665,129 @@ fn permission_bits_are_fingerprinted_and_setuid_files_are_refused() {
     assert!(error.contains("setuid"), "{error}");
     assert_eq!(digest_tree(&f.ticket.target).unwrap(), f.ticket.old_digest);
     assert_eq!(digest_tree(&f.candidate).unwrap(), f.ticket.new_digest);
+}
+
+// Downgrades: the helper itself refuses an update that is not newer.
+#[test]
+fn an_update_that_is_not_newer_is_refused_before_the_exchange() {
+    for version in ["0.1.0-rc.4", "0.1.0-rc.5"] {
+        let mut f = fixture();
+        bundle(&f.ticket.target, "0.1.0-rc.5", OPENED);
+        bundle(&f.candidate, version, NEVER);
+        f.ticket.new_tag = format!("desktop-v{version}");
+        f.prepare_again();
+        let error =
+            install_committed(&f.ticket, &f.job, &f.candidate, &fixtures, QUICK).unwrap_err();
+        assert!(error.contains("must be newer"), "{version}: {error}");
+        assert_eq!(digest_tree(&f.ticket.target).unwrap(), f.ticket.old_digest);
+        assert_eq!(wait_for(&f.profile().join("opened")), "rolled-back");
+        assert!(!f.profile().join("new-started").exists());
+    }
+    // A job without a release tag cannot skip the comparison.
+    let mut f = fixture();
+    f.ticket.new_tag = "0.1.0-rc.6".into();
+    f.prepare_again();
+    assert!(
+        exchange_verified(&f.ticket, f.root(), &f.candidate, &Trust::Fixtures, QUICK)
+            .unwrap_err()
+            .contains("release tag")
+    );
+    // Semantic order, not text order: rc.10 follows rc.9.
+    let mut f = fixture();
+    bundle(&f.ticket.target, "0.1.0-rc.9", "#!/bin/sh\n");
+    bundle(&f.candidate, "0.1.0-rc.10", "#!/bin/sh\n");
+    f.ticket.new_tag = "desktop-v0.1.0-rc.10".into();
+    f.prepare_again();
+    exchange_verified(&f.ticket, f.root(), &f.candidate, &Trust::Fixtures, QUICK).unwrap();
+    assert_eq!(digest_tree(&f.ticket.target).unwrap(), f.ticket.new_digest);
+}
+
+// `--restore` swaps back only the exact previous OctoSense bundle.
+#[test]
+fn restore_puts_back_only_the_exact_previous_octosense_bundle() {
+    let restore = |f: &Fixture| {
+        restore_previous(
+            &f.ticket,
+            &f.job,
+            &f.candidate,
+            &Trust::Fixtures,
+            "Restored.",
+        )
+    };
+    // An installation's honest leftovers are restored.
+    let f = fixture();
+    exchange(&f.ticket.target, &f.candidate).unwrap();
+    restore(&f).unwrap();
+    assert_eq!(digest_tree(&f.ticket.target).unwrap(), f.ticket.old_digest);
+    // A planted job is refused even with fingerprints recorded to match.
+    type Plant = (&'static str, fn(&Fixture));
+    let plants: [Plant; 3] = [
+        ("retained app with another bundle id", |f| {
+            let plist = f.candidate.join("Contents/Info.plist");
+            let text = fs::read_to_string(&plist).unwrap();
+            fs::write(&plist, text.replace(BUNDLE_ID, "org.example.other")).unwrap();
+        }),
+        ("retained app with a setuid file", |f| {
+            let exe = f.candidate.join("Contents/MacOS/octosense");
+            fs::set_permissions(exe, fs::Permissions::from_mode(0o4755)).unwrap();
+        }),
+        ("installed app without its executable", |f| {
+            fs::remove_file(f.ticket.target.join("Contents/MacOS/octosense")).unwrap();
+        }),
+    ];
+    for (case, plant) in plants {
+        let mut f = fixture();
+        exchange(&f.ticket.target, &f.candidate).unwrap();
+        plant(&f);
+        f.ticket.old_digest = digest_tree(&f.candidate).unwrap();
+        f.ticket.new_digest = digest_tree(&f.ticket.target).unwrap();
+        let error = restore(&f).unwrap_err();
+        assert!(
+            error.contains("not an OctoSense app bundle"),
+            "{case}: {error}"
+        );
+        assert_eq!(
+            digest_tree(&f.ticket.target).unwrap(),
+            f.ticket.new_digest,
+            "{case}"
+        );
+    }
+    // Nor anything but the exact bundle this installation replaced.
+    let f = fixture();
+    exchange(&f.ticket.target, &f.candidate).unwrap();
+    fs::write(f.candidate.join("Contents/extra"), b"not the replaced app").unwrap();
+    assert!(restore(&f).unwrap_err().contains("changed"));
+    assert_eq!(digest_tree(&f.ticket.target).unwrap(), f.ticket.new_digest);
+}
+
+// A changed bundle that something keeps running is still swapped out.
+#[test]
+fn a_changed_bundle_kept_running_is_still_swapped_out() {
+    let mut f = fixture();
+    bundle(&f.ticket.target, "0.1.0-rc.5", OPENED);
+    ad_hoc_sign(&f.ticket.target, BUNDLE_ID);
+    bundle(&f.candidate, "0.1.0-rc.6", NEVER);
+    f.prepare_again();
+    let trust = codesign::Identity::ad_hoc_fixture(&f.ticket.target)
+        .map(Trust::Signed)
+        .unwrap();
+    // After the exchange the installed bundle is not the checked one, and a
+    // process runs from inside it.
+    exchange(&f.ticket.target, &f.candidate).unwrap();
+    let mut running = sidecar(&f.ticket.target, 30_000);
+    assert!(ensure_bundle_stopped(&f.ticket.target).is_err());
+    finish_exchanged(&f.ticket, &f.job, &f.candidate, &trust, QUICK).unwrap();
+    let kept_running = running.try_wait().unwrap().is_none();
+    let _ = running.kill();
+    let _ = running.wait();
+    assert!(
+        kept_running,
+        "the fixture process should keep running throughout"
+    );
+    // Swapped out at once, and the previous app reopened.
+    assert_eq!(digest_tree(&f.ticket.target).unwrap(), f.ticket.old_digest);
+    assert!(f.candidate.join("Contents/MacOS/octos-kernel").is_file());
+    assert_eq!(wait_for(&f.profile().join("opened")), "rolled-back");
+    assert!(!f.profile().join("new-started").exists());
+    assert_eq!(f.receipt()["state"], "rolled_back");
 }
