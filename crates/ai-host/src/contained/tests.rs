@@ -707,20 +707,45 @@ fn declaration_changes_never_bypass_consent_or_verified_caller_identity() {
     assert!(peers.ids().is_empty(), "wrong host profile never creates a peer");
 }
 
-/// A legitimate `octos.turn.start` can outlive the 60s universal
-/// service-timeout default. The dispatcher in `appstore::services` uses
-/// `DEFAULT_TIMEOUT = 60s` for any service that does not override
-/// `HostService::timeout`; `ContainedOctos` overrides it to 240s for
-/// `octos.turn.start` because the broker underneath allows 180s for the
-/// turn itself, plus context preparation time. With the fix in place,
-/// the late reply is delivered; without it, the dispatcher times out at
-/// 60s and the user sees "the host service timed out" before the model
-/// answer ever arrives.
-///
-/// The fake peer waits 62s, comfortably above 60s and below 240s. Total
-/// runtime is therefore ~62s for this single test.
+/// `ContainedOctos::timeout` must return [`TURN_START_TIMEOUT`] for
+/// `octos.turn.start` and the dispatcher's [`DEFAULT_TIMEOUT`] for every
+/// other `octos.*` method. Asserted directly so the test does not have to
+/// sleep for 62s while holding the file's `serial()` lock. The real-time
+/// version is below; it stays under `#[ignore]` and is run with
+/// `cargo test -- --ignored`.
 #[test]
-fn contained_turn_start_outlives_default_service_timeout() {
+fn contained_turn_start_timeout_returns_extended_budget() {
+    let peers = Peers::new(Turn::Reply(json!({})));
+    let bridge = ContainedOctos::new(true, peers);
+    let host_dir = std::env::temp_dir().join("octosense-contained-tests");
+
+    let turn_start = ServiceCall {
+        app_id: APP.into(),
+        service: "octos.turn.start".into(),
+        args: json!({}),
+        from_sheet: false,
+        may_prompt: true,
+        host_dir: host_dir.clone(),
+    };
+    assert_eq!(bridge.timeout(&turn_start), TURN_START_TIMEOUT, "octos.turn.start must override the universal service timeout");
+
+    let session_open = ServiceCall {
+        app_id: APP.into(),
+        service: "octos.session.open".into(),
+        args: json!({}),
+        from_sheet: false,
+        may_prompt: true,
+        host_dir,
+    };
+    assert_eq!(bridge.timeout(&session_open), DEFAULT_TIMEOUT, "every other octos.* call keeps the default service timeout");
+}
+
+/// Real-time version of the per-service timeout regression. The fake
+/// peer waits 62s, comfortably above the default 60s and below the 240s
+/// override. Run explicitly with `cargo test -- --ignored`.
+#[ignore]
+#[test]
+fn contained_turn_start_outlives_default_service_timeout_real() {
     let _g = serial();
     let peers = Peers::new(Turn::DelayedReply(
         Duration::from_secs(62),
