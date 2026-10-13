@@ -69,7 +69,7 @@ pub fn prepare(artifact: &VerifiedArtifact, cancellation: &Cancellation) -> Resu
         .tag()
         .strip_prefix("desktop-v")
         .ok_or("Invalid release tag.")?;
-    require_newer(&target, version)?;
+    require_newer(&trust.installed_version(&target)?, version)?;
     let parent = target.parent().ok_or("No installation folder.")?;
     let nonce = uuid::Uuid::new_v4().to_string();
     let root = parent.join(format!(".octosense-update-{nonce}"));
@@ -104,9 +104,12 @@ pub fn prepare(artifact: &VerifiedArtifact, cancellation: &Cancellation) -> Resu
     if digest_tree(&candidate)? != new_digest {
         return Err("The staged app differs from the verified disk image.".into());
     }
-    trust.admit(&candidate).map_err(|reason| {
+    let sealed = trust.admit(&candidate).map_err(|reason| {
         format!("The downloaded app {reason}, so Install & Restart refused it. Use Open installer manually.")
     })?;
+    if sealed != version {
+        return Err("The downloaded app's signed version is not the release it was downloaded as. Use Open installer manually.".into());
+    }
     run(
         Command::new("/usr/bin/hdiutil").arg("detach").arg(&mount),
         cancellation,

@@ -47,7 +47,7 @@ pub(crate) fn startup(cache: &Path) {
         let _ = NOTICE.set(notice);
         makepad_widgets::makepad_platform::thread::SignalToUI::set_ui_signal();
     }
-    octosense_updater::macos::sweep_backups(cache);
+    octosense_updater::macos::sweep_backups();
 }
 
 /// A failed, cancelled or rolled-back update, as (title, message), shown once

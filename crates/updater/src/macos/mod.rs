@@ -14,7 +14,7 @@ use std::{
     os::{
         fd::AsRawFd,
         unix::{
-            ffi::OsStrExt,
+            ffi::{OsStrExt, OsStringExt},
             fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         },
     },
@@ -119,31 +119,65 @@ impl Trust {
         }
         codesign::Identity::installed(bundle).map(Self::Signed)
     }
+    /// Admits `bundle` and returns its `CFBundleShortVersionString`: as its
+    /// validated signature sealed it, or, for fixtures, as read from disk.
     /// An error is a phrase that follows the bundle's name.
-    fn admit(&self, bundle: &Path) -> Result<()> {
+    fn admit(&self, bundle: &Path) -> Result<String> {
         match self {
             Self::Signed(identity) => identity.admit(bundle),
             #[cfg(any(test, debug_assertions))]
-            Self::Fixtures => Ok(()),
+            Self::Fixtures => plist_field(bundle, "CFBundleShortVersionString")
+                .map_err(|_| "has invalid bundle metadata".into()),
+        }
+    }
+    /// The installed app's version, as its signature sealed it when this
+    /// trust was taken (fixtures: read from `bundle` now).
+    #[cfg_attr(not(any(test, debug_assertions)), allow(unused_variables))]
+    fn installed_version(&self, bundle: &Path) -> Result<String> {
+        match self {
+            Self::Signed(identity) => Ok(identity.version().to_owned()),
+            #[cfg(any(test, debug_assertions))]
+            Self::Fixtures => plist_field(bundle, "CFBundleShortVersionString"),
         }
     }
 }
 
-/// Serializes installers of one installation with an exclusive lock on a file
-/// in the private update folder, named after the app's path. Nothing is
-/// created beside the app, and only this user's processes can open the file,
-/// so nobody else can hold it to block updates (anyone may lock a folder they
-/// can read). Installers from different profiles are not serialized by it.
-/// Released when dropped or when the helper exits, however it exits; never
-/// inherited by the apps it launches (std opens files close-on-exec).
+/// This user's private temporary folder, from `confstr`, so the helper's
+/// cleared environment does not matter. The system keeps it at mode 0700.
+fn user_temp_dir() -> Result<PathBuf> {
+    let mut buffer = vec![0u8; 1024];
+    let length = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+        )
+    };
+    if length < 2 || length > buffer.len() {
+        return Err("This user has no private temporary folder for the update lock.".into());
+    }
+    buffer.truncate(length - 1);
+    let folder = PathBuf::from(std::ffi::OsString::from_vec(buffer));
+    private_dir(&folder)?;
+    Ok(folder)
+}
+
+/// Serializes this user's installers of one installation, from any profile,
+/// with an exclusive lock on a file in the user's private temporary folder,
+/// named after the app's path. Nothing is created beside the app, and only
+/// this user's processes can open the file, so nobody else can hold it to
+/// block updates (anyone may lock a folder they can read). Another macOS
+/// user's installer of the same app is caught after the exchange instead
+/// (`swap_in`). Released when dropped or when the helper exits, however it
+/// exits; never inherited by the apps it launches (std opens files
+/// close-on-exec).
 struct InstallLock {
     _file: File,
 }
 impl InstallLock {
-    fn acquire(updates: &Path, target: &Path) -> Result<Self> {
-        private_dir(updates)?;
+    fn acquire(target: &Path) -> Result<Self> {
         let hash = format!("{:x}", Sha256::digest(target.as_os_str().as_bytes()));
-        let path = updates.join(format!("install-{}.lock", &hash[..16]));
+        let path = user_temp_dir()?.join(format!("octosense-install-{}.lock", &hash[..16]));
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -229,11 +263,11 @@ fn validate_bundle(bundle: &Path, version: Option<&str>) -> Result<()> {
 /// An update must be newer than the installed app, compared as semantic
 /// versions. An older release is signed just as validly, so a downgrade would
 /// pass every other check; `--restore` is the one deliberate step back.
-fn require_newer(installed: &Path, version: &str) -> Result<()> {
+fn require_newer(installed: &str, version: &str) -> Result<()> {
     let parse = |text: &str| {
         semver::Version::parse(text).map_err(|e| format!("Invalid release version {text}: {e}"))
     };
-    if parse(version)? <= parse(&plist_field(installed, "CFBundleShortVersionString")?)? {
+    if parse(version)? <= parse(installed)? {
         return Err("The update must be newer than the installed app.".into());
     }
     Ok(())
@@ -619,8 +653,7 @@ pub fn helper_main() -> Result<()> {
     let ticket = read_ticket(&job)?;
     let root = job.parent().unwrap();
     let candidate = root.join("candidate.app");
-    let updates = ticket.receipt.parent().ok_or("No private update folder.")?;
-    let lock = InstallLock::acquire(updates, &ticket.target)?;
+    let lock = InstallLock::acquire(&ticket.target)?;
     if restore {
         ensure_bundle_stopped(&ticket.target)?;
         let trust = Trust::of_installed(&ticket.target)?;
@@ -687,15 +720,37 @@ fn install_committed(
             return Err(message);
         }
     };
-    if let Err(error) = exchange_verified(ticket, root, candidate, &trust, stop_wait) {
-        let message =
-            format!("The update was not installed. {error} The installed app was not changed.");
-        let _ = phase(root, "not_installed");
-        let _ = status(ticket, "failed", &message);
-        launch_verified(ticket, None, &trust).map_err(|e| format!("{message} {e}"))?;
-        return Err(message);
+    if let Err(error) = verify_before_exchange(ticket, candidate, &trust, stop_wait) {
+        return reopen_installed(
+            ticket,
+            root,
+            &trust,
+            &format!("The update was not installed. {error} The installed app was not changed."),
+        );
+    }
+    if let Err(error) = swap_in(ticket, root, candidate) {
+        return reopen_installed(
+            ticket,
+            root,
+            &trust,
+            &format!("The update was not installed. {error}"),
+        );
     }
     finish_exchanged(ticket, job, candidate, &trust, stop_wait)
+}
+
+/// Nothing of this update stayed installed. Record why, then reopen the app
+/// that is installed, with the rollback signal. The receipt is written first,
+/// so the reopened app reads it, and says so if it could not be reopened.
+fn reopen_installed(ticket: &Ticket, root: &Path, trust: &Trust, message: &str) -> Result<()> {
+    let _ = phase(root, "not_installed");
+    let _ = status(ticket, "failed", message);
+    if let Err(error) = launch_verified(ticket, None, trust) {
+        let message = format!("{message} OctoSense could not be reopened: {error}");
+        let _ = status(ticket, "failed", &message);
+        return Err(message);
+    }
+    Err(message.to_owned())
 }
 
 /// After the exchange, the former app lives at candidate.app. Start the new
@@ -712,28 +767,10 @@ fn finish_exchanged(
     let child =
         match phase(root, "starting").and_then(|()| launch_verified(ticket, Some(job), trust)) {
             Ok(child) => child,
-            Err(error) => {
-                return roll_back(
-                    ticket,
-                    job,
-                    candidate,
-                    trust,
-                    &error,
-                    Recovery::Now,
-                    stop_wait,
-                )
-            }
+            Err(error) => return roll_back(ticket, job, candidate, trust, &error, stop_wait),
         };
     if let Err(error) = wait_for_startup(ticket, root, child) {
-        return roll_back(
-            ticket,
-            job,
-            candidate,
-            trust,
-            &error,
-            Recovery::AfterExit,
-            stop_wait,
-        );
+        return roll_back(ticket, job, candidate, trust, &error, stop_wait);
     }
     write_json(
         &root.join("state.json"),
@@ -751,9 +788,8 @@ fn finish_exchanged(
 }
 
 /// Every check before the one atomic exchange; nothing changes until all pass.
-fn exchange_verified(
+fn verify_before_exchange(
     ticket: &Ticket,
-    root: &Path,
     candidate: &Path,
     trust: &Trust,
     stop_wait: Duration,
@@ -771,12 +807,32 @@ fn exchange_verified(
         .strip_prefix("desktop-v")
         .ok_or("The update job has no release tag.")?;
     validate_bundle(candidate, Some(version))?;
-    require_newer(&ticket.target, version)?;
-    trust
+    // Both versions as the signatures sealed them, not as the files read
+    // after the wait above.
+    let sealed = trust
         .admit(candidate)
         .map_err(|reason| format!("The update {reason}."))?;
+    if sealed != version {
+        return Err("The update's signed version is not the release it was downloaded as.".into());
+    }
+    require_newer(&trust.installed_version(&ticket.target)?, &sealed)
+}
+
+/// The one atomic exchange. Another macOS user's installer of this app,
+/// which the lock does not cover, may have swapped first: then what came out
+/// is not the app this job recorded. That installer's update is put back at
+/// once, so every staging folder holds what its job says, and the sweep keeps
+/// the right backup.
+fn swap_in(ticket: &Ticket, root: &Path, candidate: &Path) -> Result<()> {
     phase(root, "swapping")?;
-    exchange(&ticket.target, candidate)
+    exchange(&ticket.target, candidate)?;
+    if digest_tree(candidate).is_ok_and(|out| out == ticket.old_digest) {
+        return Ok(());
+    }
+    exchange(&ticket.target, candidate).map_err(|error| {
+        format!("Another installation replaced the app at the same moment, and its version could not be put back: {error}")
+    })?;
+    Err("Another installation of this app installed an update at the same moment; its version was kept.".into())
 }
 
 /// Waits for the new app's first frame (or, for an older release, for it to
@@ -809,37 +865,24 @@ fn wait_for_startup(ticket: &Ticket, root: &Path, mut child: Child) -> Result<()
     }
 }
 
-/// When `roll_back` puts the previous app back.
-#[derive(Clone, Copy)]
-enum Recovery {
-    /// The new app failed its check before launch and never ran: swap at
-    /// once. A rename does not disturb running processes, so nothing that
-    /// runs from the unverified bundle can keep it installed.
-    Now,
-    /// The new app ran: let it and its bundled children stop first.
-    AfterExit,
-}
-
-/// Puts the previous app back and reopens it. Only the previous app must be
-/// exactly as it was (the job's recorded fingerprint); whatever is installed
-/// goes back into the staging folder even if it changed after its checks, so
-/// unverified code never stays installed. Nothing is opened only when the
-/// previous app changed, or a new app that ran stays in use; the receipt then
-/// explains, and both bundles are kept.
+/// Puts the previous app back at once and reopens it. A rename does not
+/// disturb running processes, so nothing that still runs from the new bundle,
+/// whether it failed its check before launch or started and failed, can keep
+/// it installed. Only the previous app must be exactly as it was (the job's
+/// recorded fingerprint); whatever is installed goes back into the staging
+/// folder even if it changed after its checks. Nothing is opened only when
+/// the previous app changed; the receipt then explains, and both bundles are
+/// kept.
 fn roll_back(
     ticket: &Ticket,
     job: &Path,
     candidate: &Path,
     trust: &Trust,
     error: &str,
-    when: Recovery,
     stop_wait: Duration,
 ) -> Result<()> {
     let root = job.parent().ok_or("Missing staging folder.")?;
     let restored = (|| {
-        if let Recovery::AfterExit = when {
-            wait_until_stopped(&ticket.target, stop_wait)?;
-        }
         if digest_tree(candidate)? != ticket.old_digest {
             return Err(
                 "Automatic recovery stopped because the retained previous app changed.".into(),
@@ -860,16 +903,31 @@ fn roll_back(
         return Err(message);
     }
     let _ = phase(root, "rolled_back");
+    // The receipt says what is true at each step: restored but not reopened
+    // while it waits, rolled back once the previous app is started.
+    let restored = format!("{error} The previous version was restored.");
     let _ = status(
         ticket,
-        "rolled_back",
-        &format!("{error} The previous version was restored. Your app data was not replaced."),
+        "failed",
+        &format!("{restored} OctoSense has not been reopened yet."),
     );
     // Whatever still runs from the failed bundle now runs from the staging
     // folder. Give it time to exit (a kernel there may hold the profile's
     // data lock) before the previous app reopens, but reopen it regardless.
     let _ = wait_until_stopped(candidate, stop_wait);
-    launch_verified(ticket, None, trust).map(drop)
+    // Written just before the start, so the reopened app reads it at once,
+    // and replaced if the start fails.
+    let _ = status(
+        ticket,
+        "rolled_back",
+        &format!("{restored} Your app data was not replaced."),
+    );
+    if let Err(reopen) = launch_verified(ticket, None, trust) {
+        let message = format!("{restored} It could not be reopened: {reopen}");
+        let _ = status(ticket, "failed", &message);
+        return Err(message);
+    }
+    Ok(())
 }
 
 /// Called after the shell draws its first frame. Receipt IO runs off the UI
@@ -967,15 +1025,14 @@ fn read_receipt(path: &Path) -> Option<serde_json::Value> {
 }
 
 /// Deletes retained updates beside this installation that nothing needs;
-/// each holds a whole app. Run at startup, off the UI thread, with the
-/// private update folder, and by the helper after a successful installation.
-/// Returns how many were removed.
-pub fn sweep_backups(updates: &Path) -> usize {
+/// each holds a whole app. Run at startup, off the UI thread, and by the
+/// helper after a successful installation. Returns how many were removed.
+pub fn sweep_backups() -> usize {
     let Ok(target) = current_bundle() else {
         return 0;
     };
     // An installer at work holds the lock: leave everything to it.
-    let Ok(lock) = InstallLock::acquire(updates, &target) else {
+    let Ok(lock) = InstallLock::acquire(&target) else {
         return 0;
     };
     sweep_retained(&target, &lock, SystemTime::now())

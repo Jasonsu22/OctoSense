@@ -102,7 +102,8 @@ fn closing_commit_pipe_cancels_and_removes_only_the_staging_folder() {
         assert!(wait(&mut child).success());
         assert!(!f.root.exists());
         assert_eq!(fs::read(f.target.join("untouched")).unwrap(), b"original");
-        // Its lock lives in the private update folder: nothing is left beside the app.
+        // Its lock lives in this user's private temporary folder: nothing is
+        // left beside the app.
         assert_eq!(names(f.target.parent().unwrap()), ["OctoSense.app"]);
     }
 }
@@ -201,8 +202,9 @@ fn commit_planted(p: &Planted, fixtures_seam: bool) -> String {
     assert!(!output.status.success());
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
+/// Generous, for a loaded machine: it returns as soon as the file appears.
 fn wait_for(path: &Path) -> Option<String> {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = Instant::now() + Duration::from_secs(30);
     while Instant::now() < until {
         if let Ok(text) = fs::read_to_string(path) {
             return Some(text);
