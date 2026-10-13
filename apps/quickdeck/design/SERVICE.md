@@ -501,3 +501,30 @@ held (#448).
   a tap plays or pauses; moving on or Exit stops). Where the `Video` widget
   has no player (today: Linux and Windows desktops), the app keeps the poster
   and says "Playback isn't available on this system".
+
+As built in #515 (coordinator, 13 Oct 2026); where these differ from the
+bullets above, they win:
+
+- `deck.slide`'s `media.id` is the clip's media item id in the deck (two
+  shapes that play one item share it); `deck.media` takes the shape's own
+  `id`.
+- A clip larger than the whole media cache (32 MiB) is `storage_full:` at
+  once, with nothing cleared.
+- A clip the deck holds no bytes for (linked to a file elsewhere, which the
+  service never follows, or with a missing or empty item) is
+  `unsupported:`.
+- "Oldest first" means used longest ago: a clip handed out again counts as
+  just used (its file's modification time is set to now), so a slide's
+  other clip can't push it out before it plays.
+- Anything else at a clip's file name (a file cut short, or a link) is a
+  stale entry: it goes, and the clip is written anew, create-only. A folder
+  there is `invalid:`.
+- Clips no open document uses (an earlier run's, or a released document's)
+  go when a document next opens in that storage.
+- `deck.media` finds a clip inside a group too; `deck.slide` lists only
+  top-level shapes.
+- From a `.pptx`: deckcraft at `d0e57d7e` doesn't read a clip's autoplay or
+  loop from a package, so such a clip answers `autoplay: false` and
+  `loop: false` (a native deck keeps both). And deckcraft's `.pptx` writer
+  gives a clip without a poster a placeholder picture, so after a round
+  trip through a `.pptx` every clip answers `poster: true`.
