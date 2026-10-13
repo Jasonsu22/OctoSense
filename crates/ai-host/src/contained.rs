@@ -50,6 +50,7 @@ use octosense_appstore::services::{HostService, Replier, ServiceCall, ServiceHos
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::time::Duration;
 
 /// The account an app's peer acts for, as the host knows it (ADR 0004
 /// §11): [`ACCOUNT`] for an app without accounts; for one that keeps
@@ -484,6 +485,24 @@ fn sink(context: Weak<dyn OctosContext>, once: Once) -> EventSink {
 impl HostService for ContainedOctos {
     fn family(&self) -> &'static str {
         "octos"
+    }
+
+    /// `octos.turn.start` runs a model turn underneath a context that the
+    /// broker has allowed 180s for (`app-peers/src/broker.rs` `turn_timeout`),
+    /// plus time to establish the context before the turn even begins. The
+    /// host-side dispatcher (`octosense_appstore::services::dispatch`) uses
+    /// `DEFAULT_TIMEOUT = 60s` for any service that does not override it,
+    /// which is shorter than a legitimate turn on slow providers or large
+    /// outputs. We override only this one method, so a long-running turn is
+    /// not killed before the broker reports its answer, while every other
+    /// `octos.*` call (session.open, .close, .cancel, etc.) keeps the
+    /// 60s default.
+    fn timeout(&self, call: &ServiceCall) -> Duration {
+        if call.service == "octos.turn.start" {
+            Duration::from_secs(240)
+        } else {
+            Duration::from_secs(60)
+        }
     }
 
     fn call(&mut self, call: ServiceCall, reply: Replier, _host: &mut dyn ServiceHost) {
